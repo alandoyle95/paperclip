@@ -1,5 +1,6 @@
 import { isIncompleteFirstTaskResult } from "./case-outcome.js";
 import { buildCampaignAccounting } from "./attempt-accounting.js";
+import { validateEvalOperationsReport } from "./operations-report.js";
 import { summarizeStartupReuse } from "../../packages/adapter-utils/src/startup-reuse.js";
 import { validateCampaignAccounting, validateRetainedRunnerResult } from "./result-validation.js";
 import {
@@ -69,6 +70,7 @@ export function buildRunnerCampaign(input: {
   results: readonly RunnerE2EResult[];
   attempts?: readonly RunnerE2EResult[];
   accounting?: RunnerE2ECampaignAccounting;
+  operations?: RunnerE2ECampaign["operations"];
   excludedArtifacts?: number;
   eventName?: string | null;
   catalog?: readonly ReportExecution[];
@@ -84,6 +86,7 @@ export function buildRunnerCampaign(input: {
     excludedArtifacts: input.excludedArtifacts,
   });
   validateCampaignAccounting(accounting);
+  if (input.operations) validateEvalOperationsReport(input.operations);
   const billingFor = (selectedResults: readonly RunnerE2EResult[]) => {
     const ids = new Set(selectedResults.map(result => result.executionId));
     const receipts = accounting.attempts.filter(attempt => ids.has(attempt.executionId));
@@ -217,6 +220,7 @@ export function buildRunnerCampaign(input: {
     rankingSnapshots,
     billing: billingFor(results),
     accounting,
+    ...(input.operations ? { operations: input.operations } : {}),
     suites,
     results,
   };

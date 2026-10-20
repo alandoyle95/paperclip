@@ -108,8 +108,15 @@ Gateway and native tracing are separate opt-ins; see the README tracing section.
 - `ledger.jsonl.summary.json` preserves known, reserved/held, conflicting, and
   unknown amounts on normal finalization, including failed campaign workers.
 - `campaign.json` and the dashboard preserve retained attempts and show missing
-  selected results after worker failure. The request journal is not yet folded
-  into the dashboard's heartbeat totals; do not add the two totals together.
+  selected results after worker failure. Their request-ledger section shows the
+  shared ledger's known subtotal, classifications, additional held reservations,
+  unresolved requests and per-attempt totals. It can include earlier campaigns
+  sharing that budget. It is a separate view of model spending: do not add it to
+  heartbeat totals. The journal hash and record count identify the checkpoint.
+- To regenerate a merged report with the same ledger, pass
+  `PAPERCLIP_E2E_OPERATIONS_LEDGER=/absolute/ledger.jsonl` to `report.ts`.
+  Dashboard refresh and public publication preserve and validate its closed
+  numeric projection. Raw request receipts and the journal remain private.
 
 All model amounts from usage times a pricecard are **estimated**, not billed or
 reconciled. This path does not yet price CI compute, storage, subscriptions,

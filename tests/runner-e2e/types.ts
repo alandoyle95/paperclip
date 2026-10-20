@@ -444,6 +444,7 @@ export interface RunnerE2ECampaign {
   }>;
   billing: RunnerE2EAggregateBillingSummary;
   accounting?: RunnerE2ECampaignAccounting;
+  operations?: import("./operations-report.js").EvalOperationsReport;
   suites: RunnerE2ESuiteSummary[];
   results: RunnerE2EResult[];
 }

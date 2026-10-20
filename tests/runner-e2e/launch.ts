@@ -32,6 +32,7 @@ import { classifyFailure } from "./failure-classifier.js";
 import { mustPreserveRecoveryState, shouldKeepFailedDiagnostics } from "./cleanup-verification.js";
 import { effectiveAutomaticRetryLimit, executeWithAutomaticRetry } from "./automatic-retry.js";
 import { buildRunnerCampaign } from "./history.js";
+import { readEvalOperationsReport } from "./operations-report.js";
 import {
   buildRunnerE2EProcessEnvironment,
   resolvePaperclipRemoteRunnerBinaryForHarness,
@@ -1130,6 +1131,7 @@ async function main() {
     expected: executions.map((execution) => execution.id),
     results: finalResults,
     attempts,
+    ...(operations ? { operations: await readEvalOperationsReport(operations.manifest.ledgerPath) } : {}),
   });
   const campaignSecrets = normalizedSecrets(
     [...CREDENTIAL_NAMES, ...EVAL_OBSERVABILITY_SECRET_NAMES].map((name) => process.env[name]),

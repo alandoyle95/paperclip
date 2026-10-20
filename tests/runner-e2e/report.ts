@@ -12,6 +12,7 @@ import { runnerMatrix } from "./catalog.js";
 import { billingCoverageLabel, summarizeExecutionBilling } from "./billing.js";
 import { isSelectedCarryForward, retainedCampaignAttempts } from "./attempt-accounting.js";
 import { summarizeCampaignFeedback } from "./feedback.js";
+import { operationsReportText, readEvalOperationsReport } from "./operations-report.js";
 import { renderRunnerE2EDashboard } from "./dashboard.js";
 import {
   buildRunnerCampaign,
@@ -313,6 +314,7 @@ async function main() {
     results: resolvedResults,
     attempts: retained.attempts,
     excludedArtifacts: excludedArtifacts + retained.excludedArtifacts,
+    ...(process.env.PAPERCLIP_E2E_OPERATIONS_LEDGER ? { operations: await readEvalOperationsReport(process.env.PAPERCLIP_E2E_OPERATIONS_LEDGER) } : {}),
   });
   const billing = campaign.billing;
   const feedback = summarizeCampaignFeedback(campaign.accounting?.attempts ?? campaign.results);
@@ -379,6 +381,7 @@ async function main() {
     `Provider-reported LLM cost: ${billingCoverageLabel(`$${billing.reportedLlmCostUsd.toFixed(6)}`, billing.llm.runsWithReportedCost, billing.llm.runCount)}`,
     `Estimated LLM cost: ${billingCoverageLabel(`$${(billing.estimatedLlmCostUsd ?? 0).toFixed(6)}`, billing.llm.runsWithEstimatedCost ?? 0, billing.llm.runCount)}`,
     `Accounting: ${campaign.accounting!.attempts.length} retained attempts; ${campaign.accounting!.missingAttempts} missing attempts; ${campaign.accounting!.excludedArtifacts} out-of-scope artifacts excluded. Costs cover captured usage, not unobserved setup or external charges.`,
+    ...(campaign.operations ? operationsReportText(campaign.operations) : []),
     "",
     `Feedback across retained attempts: ${feedback.complaints} complaints; ${feedback.suggestions} suggestions; ${feedback.review.length} distinct items awaiting review; ${feedback.incomplete} attempts with incomplete collection. Tool submissions: ${feedback.failedSubmissions} failed, ${feedback.unknownSubmissions} unresolved. Full bodies are in access-controlled snapshots/agent-feedback.json.`,
     "",

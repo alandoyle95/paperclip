@@ -26,6 +26,7 @@ interface PublishedCampaign {
   expected: string[];
   results: PublishedResult[];
   accounting?: RunnerE2ECampaign["accounting"];
+  operations?: RunnerE2ECampaign["operations"];
 }
 
 async function relativeFiles(root: string, current = root): Promise<string[]> {
@@ -95,6 +96,7 @@ export async function regenerateRunnerDashboard(input: {
     expected,
     results,
     accounting: normalized.accounting,
+    operations: normalized.operations,
   });
   // A rendering refresh must not inherit the renderer's checkout or CI event.
   const retainedSource = results.find((result) =>
