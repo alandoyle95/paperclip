@@ -422,6 +422,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       testedAt: new Date().toISOString(),
     });
     mockAgentsApi.hire.mockReset();
+    mockAgentsApi.list.mockReset().mockResolvedValue([]);
     mockAgentsApi.create.mockReset().mockImplementation(async (_company, input) => ({ ...input, id: input.setupId, pauseReason: "setup" }));
     mockAgentsApi.hire.mockResolvedValue({ agent: { id: "agent-1" }, approval: null });
     mockCompaniesApi.create.mockResolvedValue({
@@ -475,7 +476,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       const { root, click } = await openCopilot();
       try {
         expect(mockAgentsApi.create).toHaveBeenCalled();
-        expect(mockAgentsApi.update).not.toHaveBeenCalled();
+        expect(mockAgentsApi.update).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "copilot" }, metadata: { setupAdapterPending: false } }), "c1");
         await click("Use saved Copilot connection");
         await vi.waitFor(() => expect(document.body.querySelector('[aria-label="Copilot model"]')?.textContent).toContain("GPT 5.6 Luna"));
         const model = document.body.querySelector('[aria-label="Copilot model"]') as HTMLSelectElement;
@@ -677,7 +678,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       mockCompany.loading = false;
       mockCompaniesApi.list.mockResolvedValue([]);
       mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
-      mockAgentsApi.list.mockResolvedValueOnce([
+      mockAgentsApi.list.mockResolvedValue([
         { id: "agent-existing", name: "Ada", adapterType: "claude_local" },
       ]);
       mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "codex_local" }];
@@ -2490,6 +2491,29 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       for (let i = 0; i < 8; i++) await flushReact();
     }
 
+    it("saves the submitted name before any provider choice or authentication", async () => {
+      const { root } = await openStep4();
+      expect(mockAgentsApi.create).toHaveBeenCalledTimes(1);
+      expect(mockAgentsApi.create.mock.calls[0][1]).toMatchObject({ name: "Ada", adapterType: "process", metadata: { setupAdapterPending: true }, runtimeConfig: { heartbeat: { enabled: false } } });
+      expect(document.body.querySelector('[role="radio"][aria-checked="true"]')).toBeNull();
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+      expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();
+      expect(managedApi.startLocalLogin).not.toHaveBeenCalled();
+      await pickSource(/OpenAI/);
+      expect(mockAgentsApi.create).toHaveBeenCalledTimes(1);
+      expect(mockAgentsApi.update).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ adapterType: "codex_local", metadata: { setupAdapterPending: false } }), "company-new");
+      await act(async () => root.unmount());
+    });
+
+    it("saves a provisional enabled provider when process is disabled without choosing its tile", async () => {
+      mockAdapterRegistry.disabled = new Set(["process"]);
+      const { root } = await openStep4();
+      expect(mockAgentsApi.create.mock.calls[0][1]).toMatchObject({ adapterType: "claude_local", metadata: { setupAdapterPending: true } });
+      expect(document.body.querySelector('[role="radio"][aria-checked="true"]')).toBeNull();
+      expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+      await act(async () => root.unmount());
+    });
+
     it("creates and saves an inactive identity before starting sandbox sign-in", async () => {
       let finish!: (agent: { id: string; pauseReason: string }) => void;
       mockAgentsApi.create.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }) as never);
@@ -2538,7 +2562,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await pickSource(/OpenAI/);
       const saves = mockAgentsApi.update.mock.calls.filter(call => call[0] === setupId);
       expect(saves.length).toBeGreaterThan(0);
-      for (const [, body] of saves) expect(body.adapterConfig).toMatchObject({ model: "server-model", customSetting: "preserve" });
+      for (const [, body] of saves.filter(([, body]) => body.adapterConfig)) expect(body.adapterConfig).toMatchObject({ model: "server-model", customSetting: "preserve" });
       expect(JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!).model).toBe("server-model");
       await act(async () => root.unmount());
     });

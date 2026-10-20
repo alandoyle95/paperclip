@@ -114,6 +114,39 @@ test.describe("Onboarding wizard", () => {
       "onboarding must not invent a mission the customer never gave",
     ).toBeFalsy();
 
+    // Name submission persists an inactive record before the provider question.
+    await page.locator("#onboarding-agent-name").fill("Ada");
+    const firstSetupResponse = page.waitForResponse(response =>
+      response.request().method() === "POST" && response.url().endsWith(`/api/companies/${company.id}/agents`));
+    await page.getByRole("button", { name: "Next", exact: true }).click();
+    const firstSetup = await (await firstSetupResponse).json();
+    expect(firstSetup).toMatchObject({ name: "Ada", pauseReason: "setup", metadata: { setupAdapterPending: true } });
+    await expect(page.getByRole("radio").first()).toBeVisible();
+    await expect(page.locator('[role="radio"][aria-checked="true"]')).toHaveCount(0);
+
+    // The roster path saves on Choose adapter, then configures that same row.
+    await page.goto(`/${company.issuePrefix}/agents/all`);
+    await page.getByRole("button", { name: "New Agent", exact: true }).click();
+    await page.getByLabel("Agent name", { exact: true }).fill("Atlas");
+    const nextSetupResponse = page.waitForResponse(response =>
+      response.request().method() === "POST" && response.url().endsWith(`/api/companies/${company.id}/agents`));
+    await page.getByRole("button", { name: "Choose adapter", exact: true }).click();
+    const nextSetup = await (await nextSetupResponse).json();
+    expect(nextSetup).toMatchObject({ name: "Atlas", pauseReason: "setup", metadata: { setupAdapterPending: true } });
+    await expect(page.getByRole("heading", { name: "Choose an adapter", exact: true })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await page.getByRole("main").getByRole("link", { name: /^Atlas / }).click();
+    await page.getByRole("button", { name: "Finish setup", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Choose an adapter", exact: true })).toBeVisible();
+    await page.locator("label").filter({ has: page.locator('input[name="new-agent-adapter"][value="codex_local"]') }).click();
+    await page.getByRole("button", { name: "Configure agent", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Connect a model", exact: true })).toBeVisible();
+    expect(new URL(page.url()).searchParams.get("setupAgentId")).toBe(nextSetup.id);
+    const saved = await (await page.request.get(`/api/agents/${nextSetup.id}?companyId=${company.id}`)).json();
+    expect(saved).toMatchObject({ id: nextSetup.id, name: "Atlas", pauseReason: "setup", metadata: { setupAdapterPending: false } });
+    const records = await (await page.request.get(`/api/companies/${company.id}/agents`)).json();
+    expect(records.map((agent: { id: string }) => agent.id).sort()).toEqual([firstSetup.id, nextSetup.id].sort());
+
     // The expanded wizard must not crash the app (Rules-of-Hooks regression).
     expect(pageErrors, pageErrors.join("\n")).toHaveLength(0);
   });

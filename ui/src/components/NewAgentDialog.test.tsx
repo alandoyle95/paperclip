@@ -10,6 +10,8 @@ vi.mock("@/api/instanceSettings", () => ({
     getExperimental: async () => ({ enableNativeRunner: true }),
   },
 }));
+const agents = vi.hoisted(() => ({ create: vi.fn(), update: vi.fn(), get: vi.fn(), list: vi.fn() }));
+vi.mock("@/api/agents", () => ({ agentsApi: agents }));
 const invites = vi.hoisted(() => ({ createCompanyInvite: vi.fn(), getInviteOnboarding: vi.fn(), copy: vi.fn() }));
 vi.mock("../api/access", () => ({ accessApi: invites }));
 vi.mock("../lib/clipboard", () => ({ copyTextToClipboard: invites.copy }));
@@ -42,6 +44,20 @@ async function click(label: string) {
 }
 beforeEach(async () => {
   vi.clearAllMocks();
+  const rows = new Map();
+  Object.values(agents).forEach(mock => mock.mockReset());
+  agents.list.mockResolvedValue([]);
+  agents.create.mockImplementation(async (_company, input) => {
+    const record = { ...input, id: input.setupId, pauseReason: "setup" };
+    rows.set(record.id, record);
+    return record;
+  });
+  agents.get.mockImplementation(async id => rows.get(id));
+  agents.update.mockImplementation(async (id, input) => {
+    const record = { ...rows.get(id), ...input, id };
+    rows.set(id, record);
+    return record;
+  });
   Object.values(dotApi).forEach(mock => mock.mockReset());
   invites.createCompanyInvite.mockResolvedValue({ token: "one-time-token", onboardingTextPath: "/api/invites/one-time-token/onboarding.txt" });
   invites.getInviteOnboarding.mockResolvedValue({ onboarding: { connectivity: {} } });
@@ -100,6 +116,80 @@ it("requires a name and an enabled adapter before navigating", async () => {
     .searchParams;
   expect(query.get("name")).toBe("Ada & Co");
   expect(query.get("adapterType")).toBe("codex_local");
+});
+it("saves identity on name submission before an adapter is selected", async () => {
+  expect(agents.create).not.toHaveBeenCalled();
+  await name();
+  expect(agents.create).toHaveBeenCalledTimes(1);
+  const input = agents.create.mock.calls[0][1];
+  expect(input).toMatchObject({ name: "Ada & Co", adapterType: "process", metadata: { setupAdapterPending: true }, runtimeConfig: { heartbeat: { enabled: false } } });
+  expect(document.body.textContent).toContain("Choose an adapter");
+  expect(document.querySelector('input[name="new-agent-adapter"]:checked')).toBeNull();
+  expect(state.navigate).not.toHaveBeenCalled();
+  await act(async () => document.querySelector<HTMLInputElement>('input[value="codex_local"]')!.click());
+  await click("Configure agent");
+  expect(agents.create).toHaveBeenCalledTimes(1);
+  expect(agents.update).toHaveBeenCalledWith(input.setupId, expect.objectContaining({ adapterType: "codex_local", metadata: { setupAdapterPending: false } }), "company-1");
+  const query = new URL(state.navigate.mock.calls[0][0], "http://local").searchParams;
+  expect(query.get("setupAgentId")).toBe(input.setupId);
+  expect(query.get("runner")).toBe("auto");
+});
+it("retries a failed name save with the same identity", async () => {
+  agents.create.mockRejectedValueOnce(new Error("Creation unavailable"));
+  await name();
+  expect(document.body.textContent).toContain("Creation unavailable");
+  expect(document.body.textContent).not.toContain("Choose an adapter");
+  await click("Choose adapter");
+  expect(agents.create).toHaveBeenCalledTimes(2);
+  expect(agents.create.mock.calls[1][1].setupId).toBe(agents.create.mock.calls[0][1].setupId);
+  expect(document.body.textContent).toContain("Choose an adapter");
+});
+it("keeps the draft on adapter save failure and updates it on retry", async () => {
+  await name();
+  await act(async () => document.querySelector<HTMLInputElement>('input[value="codex_local"]')!.click());
+  agents.update.mockRejectedValueOnce(new Error("Save unavailable"));
+  await click("Configure agent");
+  expect(document.body.textContent).toContain("Save unavailable");
+  expect(state.navigate).not.toHaveBeenCalled();
+  await click("Configure agent");
+  expect(agents.update.mock.calls[1][0]).toBe(agents.create.mock.calls[0][1].setupId);
+  expect(state.navigate).toHaveBeenCalledTimes(1);
+});
+it("keeps the same record after returning to the name step", async () => {
+  await name();
+  await click("Back");
+  await name();
+  expect(agents.create).toHaveBeenCalledTimes(1);
+});
+it("ignores repeated name submission while the record is being saved", async () => {
+  let finish!: (value: object) => void;
+  agents.create.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  await name();
+  const input = agents.create.mock.calls[0][1];
+  await act(async () => {
+    const form = document.querySelector("form")!;
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
+  expect(agents.create).toHaveBeenCalledTimes(1);
+  await act(async () => finish({ ...input, id: input.setupId }));
+  expect(document.body.textContent).toContain("Choose an adapter");
+});
+it("does not navigate after closing while an adapter save is pending", async () => {
+  await name();
+  await act(async () => document.querySelector<HTMLInputElement>('input[value="codex_local"]')!.click());
+  let finish!: (value: object) => void;
+  agents.update.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  await click("Configure agent");
+  await act(async () => root.render(null));
+  await act(async () => finish({ id: agents.create.mock.calls[0][1].setupId, name: "Ada & Co" }));
+  expect(state.navigate).not.toHaveBeenCalled();
+});
+it("can save the name when the process adapter is disabled", async () => {
+  await act(async () => cache.setQueryData(queryKeys.adapters.all, [...state.adapters, { type: "process", loaded: true, disabled: true }]));
+  await name();
+  expect(agents.create.mock.calls[0][1]).toMatchObject({ adapterType: "codex_local", metadata: { setupAdapterPending: true } });
+  expect(document.querySelector('input[name="new-agent-adapter"]:checked')).toBeNull();
 });
 it("offers one Codex harness without a runner/provider tile", async () => {
   await name();

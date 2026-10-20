@@ -635,6 +635,7 @@ function OnboardingWizardInner({
    * whether the row has been *answered* on this visit.
    */
   const [sourcePicked, setSourcePicked] = useState(false);
+  const [setupNameConflict, setSetupNameConflict] = useState<string | null>(null);
   const isCopilot = adapterType === "paperclip_runner";
   const [copilotConnection, setCopilotConnection] = useState<AiConnectionBinding>();
   const savedNativeRunnerDraft = saved?.adapterType === "paperclip_runner" && !(saved?.onboardingCopilot === true && copilotOnboardingQualified);
@@ -1132,7 +1133,7 @@ function OnboardingWizardInner({
     provider: managedSubscriptionProvider ?? "anthropic", method: "subscription",
     name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`,
     ownership: "personal", agentIds: [], allAgents: true,
-  }, (setupPrepared || Boolean(createdAgentId)) && effectiveOnboardingOpen && step === 4 && canUseLocalLogin && credentialMode !== "api" &&
+  }, sourcePicked && (setupPrepared || Boolean(createdAgentId)) && effectiveOnboardingOpen && step === 4 && canUseLocalLogin && credentialMode !== "api" &&
     Boolean(managedProvider) && !savedSubscription && !savedKeys.storedLogin.data && !managedBindingForStep(),
   );
   useEffect(() => {
@@ -1292,28 +1293,41 @@ function OnboardingWizardInner({
   const connectStepReady = Boolean(setupPrepared || createdAgentId) && sourceSelected && !adapterEnvLoading && !savedKeys.loading && runnerDiscoveryReady && (!isCopilot || copilotModelReady);
 
   useEffect(() => {
-    if (step !== 4 || !createdCompanyId || !sourceSelected
-      || createdAgentId || setupPrepared || preparingSetup.current.has(createdCompanyId) || setupError) return;
+    if (step !== 4 || !createdCompanyId || !agentName.trim() || !adapterRegistryLoaded
+      || createdAgentId || setupPrepared || preparingSetup.current.has(createdCompanyId) || setupError
+      || (!sourceSelected && setupNameConflict === JSON.stringify([createdCompanyId, agentName.trim().toLowerCase()]))) return;
     const companyId = createdCompanyId;
     preparingSetup.current.add(companyId);
     const id = setupAgentId ?? crypto.randomUUID();
-    setSetupAgentId(id);
     let restoring = Boolean(setupAgentId);
     void (async () => {
       if (!setupAgentId) {
-        const existing = (await agentsApi.list(companyId)).find(agent =>
-          agent.status !== "terminated" && agent.name.trim().toLowerCase() === agentName.trim().toLowerCase()
-          && agentHarnessType(agent.adapterType, agent.adapterConfig) === agentHarnessType(adapterType, isCopilot ? { provider: "acpx", acpxAgent: "copilot" } : {}));
+        const sameName = (await agentsApi.list(companyId)).filter(agent =>
+          agent.status !== "terminated" && agent.name.trim().toLowerCase() === agentName.trim().toLowerCase());
+        const existing = sameName.find(agent => agent.pauseReason === "setup" && agent.metadata?.setupAdapterPending === true)
+          ?? (sourceSelected ? sameName.find(agent => agentHarnessType(agent.adapterType, agent.adapterConfig)
+            === agentHarnessType(adapterType, isCopilot ? { provider: "acpx", acpxAgent: "copilot" } : {})) : undefined);
         if (existing) { restoring = true; return existing; }
+        // A same-name record may already be complete; choose its provider before adopting it.
+        if (!sourceSelected && sameName.length) {
+          setSetupNameConflict(JSON.stringify([companyId, agentName.trim().toLowerCase()]));
+          return null;
+        }
       }
+      const provisionalAdapter = disabledTypes.has("process") ? recommendedAdapters[0]?.type : "process";
+      if (!sourceSelected && !provisionalAdapter) throw new Error("No agent adapters are available on this instance.");
+      const createAdapter = sourceSelected ? adapterType : provisionalAdapter!;
+      if (!stillTheSameCompany(companyId)) return null;
+      setSetupAgentId(id);
       return agentsApi.create(companyId, {
       setupId: id, name: agentName.trim() || AGENT_ROLE_LABELS[agentRole], appearance: agentAppearance,
-      role: agentRole, adapterType, runner,
-      adapterConfig: isCopilot ? { provider: "acpx", acpxAgent: "copilot" } : {},
+      role: agentRole, adapterType: createAdapter, runner,
+      adapterConfig: createAdapter === "paperclip_runner" ? { provider: "acpx", acpxAgent: "copilot" } : {},
+      metadata: { setupAdapterPending: !sourceSelected },
       onboardingFirstAgent: true, runtimeConfig: buildNewAgentRuntimeConfig({ heartbeatEnabled: false }),
       });
     })().then(agent => {
-      if (!stillTheSameCompany(companyId)) return;
+      if (!agent || !stillTheSameCompany(companyId)) return;
       if (agent.pauseReason === "setup" || agent.status === "pending_approval") {
         setSetupAgentId(agent.id);
         if (restoring && agent.adapterConfig) {
@@ -1346,7 +1360,7 @@ function OnboardingWizardInner({
       preparingSetup.current.delete(companyId);
       setSetupAttempt(attempt => attempt + 1);
     });
-  }, [step, createdCompanyId, sourceSelected, runnerDiscoveryReady, createdAgentId, setupPrepared, setupAttempt]);
+  }, [step, createdCompanyId, agentName, adapterRegistryLoaded, sourceSelected, setupNameConflict, runnerDiscoveryReady, createdAgentId, setupPrepared, setupAttempt]);
 
   /**
    * Whether this step has a sign-in to do before it can hire.
@@ -2088,11 +2102,16 @@ function OnboardingWizardInner({
     return { ...runtimeConfig, ...buildNewAgentRuntimeConfig({ heartbeatEnabled }), ...(binding ? { aiConnection: binding } : {}) };
   }
 
-  const setupSnapshot = step === 4 && setupPrepared && setupAgentId && !createdAgentId && sourceSelected && runnerDiscoveryReady && (!isCopilot || copilotModelReady) && !loading
+  const setupDetailsReady = runnerDiscoveryReady && (!isCopilot || copilotModelReady);
+  const setupSnapshot = step === 4 && setupPrepared && setupAgentId && !createdAgentId && !loading
     ? JSON.stringify({ name: agentName.trim() || AGENT_ROLE_LABELS[agentRole], appearance: agentAppearance,
-      adapterType, runner, adapterConfig: buildAdapterConfig(Boolean(apiKeySecretRef.current?.binding)),
-      defaultEnvironmentId: resolvedLoginEnvironmentId,
-      runtimeConfig: buildSetupRuntimeConfig(false) })
+      ...(sourceSelected && (setupDetailsReady || isCopilot) ? {
+        adapterType, runner,
+        adapterConfig: setupDetailsReady ? buildAdapterConfig(Boolean(apiKeySecretRef.current?.binding)) : { provider: "acpx", acpxAgent: "copilot" },
+        ...(setupDetailsReady ? { defaultEnvironmentId: resolvedLoginEnvironmentId, runtimeConfig: buildSetupRuntimeConfig(false) } : {}),
+        metadata: { ...restoredSetup?.metadata, setupAdapterPending: false },
+      } : {}),
+    })
     : null;
   useEffect(() => {
     if (!setupSnapshot || !setupAgentId || !createdCompanyId) return;
@@ -2994,8 +3013,10 @@ function OnboardingWizardInner({
                         setSourcePicked(true);
                         setAdapterType(id);
                         if (id !== adapterType) setRunner("auto");
-                        if (id === "opencode_local") setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
-                        else if (id !== "codex_local") setModel("");
+                        if (id !== adapterType) {
+                          if (id === "opencode_local") setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
+                          else if (id !== "codex_local") setModel("");
+                        }
                         setConnectPhase("collapsing");
                       }}
                     />

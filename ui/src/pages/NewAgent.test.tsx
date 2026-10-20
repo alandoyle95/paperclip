@@ -27,6 +27,23 @@ describe("New agent setup", () => {
     expect(api.create).toHaveBeenCalledTimes(1);
   });
 
+  it("resumes a name-only draft at adapter selection without creating another record", async () => {
+    const setupId = "00000000-0000-4000-8000-000000000091";
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "process", setupAgentId: setupId });
+    api.get.mockResolvedValue({ id: setupId, companyId: "company-1", name: "Atlas", adapterType: "process", adapterConfig: {}, runtimeConfig: {}, metadata: { setupAdapterPending: true }, pauseReason: "setup", status: "paused" });
+    await renderCurrentParams();
+    await settle();
+    expect(document.body.textContent).toContain("Choose an adapter");
+    expect(api.create).not.toHaveBeenCalled();
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    await act(async () => document.querySelector<HTMLInputElement>('input[name="new-agent-adapter"][value="codex_local"]')!.click());
+    await act(async () => [...document.querySelectorAll("button")].find(button => button.textContent?.trim() === "Configure agent")!.click());
+    await settle();
+    expect(api.update).toHaveBeenCalledWith(setupId, expect.objectContaining({ adapterType: "codex_local", metadata: { setupAdapterPending: false } }), "company-1");
+    expect(state.navigate).toHaveBeenLastCalledWith(expect.stringContaining(`setupAgentId=${setupId}`), { replace: true });
+    expect(api.create).not.toHaveBeenCalled();
+  });
+
   it("retries early creation with the same identity before offering authentication", async () => {
     api.create.mockRejectedValueOnce(new Error("Creation unavailable"));
     await render("codex_local");

@@ -760,11 +760,13 @@ function Setup({
           : "Loading your agent…"}
       </p>
     );
-  if (!name || !adapterType)
+  if (!name || !adapterType || created?.metadata?.setupAdapterPending === true)
     return (
       <AgentBasicsDialog
         open
-        initialAdapter={adapterType}
+        initialAdapter={created?.metadata?.setupAdapterPending ? "" : adapterType}
+        initialName={created?.name ?? name}
+        setupAgentId={created?.metadata?.setupAdapterPending ? created.id : setupAgentId ?? undefined}
         onClose={() => navigate("/agents/all")}
         onContinue={(basics) =>
           navigate(`/agents/new?${new URLSearchParams(basics)}`, {
