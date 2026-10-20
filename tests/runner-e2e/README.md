@@ -825,6 +825,28 @@ usage is labeled `unavailable` or `unpriced`; it is never presented as zero
 cost. The CI report job stages the same portable site at
 `normalized/index.html` inside the access-controlled merged report artifact.
 
+Campaign billing retains a separate numeric receipt for each attempt, including
+failed retries. The selected result still controls the grade and result card.
+Copies of the same attempt do not add another charge. The supervisor stamps a
+campaign/attempt identity; CI cells share `PAPERCLIP_E2E_ACCOUNTING_CAMPAIGN_ID`
+while retaining their separate artifact directories. Report regeneration keeps
+these receipts and their totals. A later cleanup update replaces an earlier
+observation of the same attempt; contradictory costs at the same timestamp are
+rejected instead of silently choosing one.
+
+The report shows missing attempt receipts and artifacts excluded from another
+campaign. Legacy CI evidence can be grouped by workflow run URL. Unscoped local
+artifacts cannot establish campaign membership, so only the selected result is
+used. Older normalized bundles without receipts are labeled `selected_results`;
+rendering them again cannot recover lost retry costs.
+
+Billing reads decimal `costUsdExact` receipts and separates model estimates
+from provider-reported amounts. Explicit zero usage differs from a missing or
+unfinished receipt. Coverage is limited to captured usage. It does not certify
+setup probes, subscription allocations, external tools, CI, storage, or provider
+invoice reconciliation. These require separate receipts. Do not use the current
+numeric report subtotals as an enforced spending limit.
+
 The trusted publisher discovers display-only entries for selected execution IDs
 absent from its local catalog, so branch-only suites remain visible in the
 dashboard, filters, gallery, and summary image. It validates execution identity

@@ -69,6 +69,21 @@ function result(execution: MatrixExecution, status: "passed" | "failed") {
 }
 
 describe("runner E2E campaign history", () => {
+  it("preserves all-attempt costs when regenerating a retained report", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-attempt-costs-"));
+    temporaryDirectories.push(root);
+    const execution = runnerMatrix[0]!;
+    const first = result(execution, "failed");
+    const last = { ...result(execution, "passed"), attempt: 2, usage: { inputTokens: 200, outputTokens: 50, costUsd: 0.02 } };
+    const campaign = buildRunnerCampaign({ campaignId: "retries", generatedAt: last.finishedAt,
+      expected: [execution.id], results: [last], attempts: [first, last] });
+    await writeFile(path.join(root, "normalized-results.json"), JSON.stringify(campaign));
+    await regenerateRunnerDashboard({ bundle: root });
+    const regenerated = JSON.parse(await readFile(path.join(root, "normalized-results.json"), "utf8"));
+    expect(regenerated.accounting).toEqual(campaign.accounting);
+    expect(regenerated.billing.reportedLlmCostUsd).toBe(0.03);
+    expect(regenerated.results[0].billing.reportedCostUsd).toBe(0.02);
+  });
   it("does not let empty legacy provenance hide a later measured source", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "runner-legacy-source-"));
     temporaryDirectories.push(root);

@@ -3150,6 +3150,12 @@ for (const execution of executions) {
       }), fixtures ?? {});
       const resultWithoutBilling: RunnerE2EResult = {
         schema: "paperclip.runner-e2e.result/v2",
+        ...(process.env.PAPERCLIP_E2E_ACCOUNTING_CAMPAIGN_ID && process.env.PAPERCLIP_E2E_ACCOUNTING_ATTEMPT_ID ? {
+          accountingIdentity: {
+            campaignId: process.env.PAPERCLIP_E2E_ACCOUNTING_CAMPAIGN_ID,
+            attemptId: process.env.PAPERCLIP_E2E_ACCOUNTING_ATTEMPT_ID,
+          },
+        } : {}),
         executionId: execution.id,
         suiteId: execution.suite.id,
         suiteDefinitionHash: execution.suiteDefinitionHash,

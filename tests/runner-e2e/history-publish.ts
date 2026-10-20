@@ -1,4 +1,4 @@
-import { validateRetainedRunnerResult } from "./result-validation.js";
+import { validateCampaignAccounting, validateRetainedRunnerResult } from "./result-validation.js";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import path from "node:path";
@@ -521,6 +521,7 @@ async function main() {
     await readFile(path.join(reportRoot, "normalized-results.json"), "utf8"),
   ) as RunnerE2ECampaign;
   for (const result of campaign.results ?? []) validateRetainedRunnerResult(result);
+  if (campaign.accounting) validateCampaignAccounting(campaign.accounting);
   if (campaign.schema !== "paperclip.runner-e2e.campaign/v2") {
     throw new Error("Historical publishing requires a v2 normalized campaign");
   }

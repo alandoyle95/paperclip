@@ -259,6 +259,7 @@ function renderCase(
     ? `<div class="billing-strip" aria-label="Billing for ${html(execution.id)}">
         <div><span>Tokens</span><strong>${html(tokenLabel(billing.llm.inputTokens, billing.llm))} in · ${html(tokenLabel(billing.llm.outputTokens, billing.llm))} out</strong><small>${html(tokenLabel(billing.llm.cachedInputTokens, billing.llm))} cached · ${billing.llm.runsWithTokenUsage}/${billing.llm.runCount} runs covered</small></div>
         <div><span>LLM spend</span><strong>${html(llmCostLabel(billing.reportedCostUsd, billing.llm))}</strong><small>${billing.llm.runsWithReportedCost}/${billing.llm.runCount} runs provider-priced</small></div>
+        ${(billing.llm.runsWithEstimatedCost ?? 0) > 0 ? `<div><span>LLM estimate</span><strong>${html(billingCoverageLabel(usdLabel(billing.llm.estimatedCostUsd ?? 0), billing.llm.runsWithEstimatedCost ?? 0, billing.llm.runCount))}</strong><small>Estimated from captured usage</small></div>` : ""}
         <div><span>Execution</span><strong>${billing.runtime.estimatedListCostUsd === undefined ? html(billing.runtime.costStatus === "not_metered" ? "Local · not metered" : "Cost unavailable") : `${html(usdLabel(billing.runtime.estimatedListCostUsd))} est.`}</strong><small>${html(durationLabel(billing.runtime.agentRunDurationMs))} agent${billing.runtime.leaseDurationMs === null ? "" : ` · ${html(durationLabel(billing.runtime.leaseDurationMs))} lease`}</small></div>
         ${billing.assistant ? `<div><span>External assistant</span><strong>${html(usdLabel(billing.assistant.estimatedCostUsd))} est.</strong><small>${html(billing.assistant.model)} · ${billing.assistant.requests} requests · ${html(tokenLabel(billing.assistant.inputTokens + billing.assistant.cachedInputTokens))} in / ${html(tokenLabel(billing.assistant.outputTokens))} out</small></div>` : ""}
       </div>`
@@ -331,7 +332,7 @@ function renderSuiteResults(input: {
     ? `<div class="suite-summary" aria-label="${html(suite.label)} current campaign summary">
         <div><span>Pass rate</span><strong>${summary.selected > 0 ? ((summary.passed / summary.selected) * 100).toFixed(1) : "0.0"}%</strong><small>${summary.passed}/${summary.selected} passed${summary.incomplete ? ` · ${summary.incomplete} incomplete` : ""}</small></div>
         <div><span>Tokens</span><strong>${html(tokenLabel(summary.billing.llm.totalTokens, summary.billing.llm))}</strong><small>${html(tokenLabel(summary.billing.llm.inputTokens, summary.billing.llm))} input · ${html(tokenLabel(summary.billing.llm.outputTokens, summary.billing.llm))} output</small></div>
-        <div><span>Known spend</span><strong>${html(summary.billing.llm.runsWithReportedCost > 0 || summary.billing.estimatedRuntimeCostUsd > 0 || summary.billing.judge ? `${usdLabel(summary.billing.observedAndEstimatedCostUsd)}${summary.billing.testsWithCompleteBilling < summary.billing.testCount ? " (partial)" : ""}` : "Unavailable")}</strong><small>reported LLM + runtime${summary.billing.judge ? " + judge" : ""} estimate</small></div>
+        <div><span>Known spend</span><strong>${html(summary.billing.llm.runsWithReportedCost > 0 || (summary.billing.llm.runsWithEstimatedCost ?? 0) > 0 || summary.billing.estimatedRuntimeCostUsd > 0 || summary.billing.judge || summary.billing.assistant ? `${usdLabel(summary.billing.observedAndEstimatedCostUsd)}${summary.billing.testsWithCompleteBilling < summary.billing.testCount ? " (partial)" : ""}` : "Unavailable")}</strong><small>reported LLM + model/runtime estimates${summary.billing.judge ? " + judge" : ""} estimate</small></div>
         <div><span>Agent time</span><strong>${html(durationLabel(summary.billing.agentRunDurationMs))}</strong><small>${html(durationLabel(summary.billing.leaseDurationMs))} lease</small></div>
         <div><span>Execution</span><strong>${summary.executed}/${summary.selected}</strong><small>${summary.retries} retries · cleanup ${summary.cleanupPassed ? "passed" : "failed"}</small></div>
       </div>`
@@ -383,7 +384,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     (total, entry) => total + resolveScreenshots(entry).length,
     0,
   );
-  const campaignBilling = aggregateCampaignBilling(
+  const campaignBilling = input.campaign?.billing ?? aggregateCampaignBilling(
     selectedEntries.map((entry) => entry.result),
   );
   const suites = [
@@ -831,19 +832,20 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     ${renderCampaignSuiteSummary(input.campaign?.suites ?? [], catalog, "", false)}
     <details class="campaign-billing-details"><summary>Campaign usage and spend</summary>
     <section class="billing-overview" aria-label="Campaign billing summary">
+      ${input.campaign?.accounting ? `<div class="billing-metric"><strong>${input.campaign.accounting.attempts.length}</strong><span>${input.campaign.accounting.scope === "retained_attempts" ? "Retained attempts" : "Selected results only"}</span><small>${input.campaign.accounting.missingAttempts} missing attempts · ${input.campaign.accounting.excludedArtifacts} out-of-scope artifacts</small></div>` : ""}
       <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.inputTokens, campaignBilling.llm))}</strong><span>Input tokens</span></div>
       <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.outputTokens, campaignBilling.llm))}</strong><span>Output tokens</span></div>
       <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.cachedInputTokens, campaignBilling.llm))}</strong><span>Cached tokens</span></div>
       <div class="billing-metric"><strong>${html(llmCostLabel(campaignBilling.reportedLlmCostUsd, campaignBilling.llm))}</strong><span>LLM reported subtotal</span></div>
+      ${(campaignBilling.llm.runsWithEstimatedCost ?? 0) > 0 ? `<div class="billing-metric"><strong>${html(billingCoverageLabel(usdLabel(campaignBilling.estimatedLlmCostUsd ?? 0), campaignBilling.llm.runsWithEstimatedCost ?? 0, campaignBilling.llm.runCount))}</strong><span>LLM estimated subtotal</span></div>` : ""}
       <div class="billing-metric"><strong>${html(usdLabel(campaignBilling.estimatedRuntimeCostUsd))}</strong><span>Daytona list estimate</span></div>
       ${campaignBilling.judge ? `<div class="billing-metric"><strong>${html(usdLabel(campaignBilling.judge.estimatedCostUsd))}</strong><span>Judge estimate · ${campaignBilling.judge.attempts} attempts · ${campaignBilling.judge.attemptsWithUnknownUsage} unknown usage</span><small>${html(tokenLabel(campaignBilling.judge.inputTokens))} in / ${html(tokenLabel(campaignBilling.judge.outputTokens))} out · $${campaignBilling.judge.reservedCostUsd.toFixed(6)} reserved</small></div>` : ""}
       ${campaignBilling.assistant ? `<div class="billing-metric"><strong>${html(usdLabel(campaignBilling.assistant.estimatedCostUsd))}</strong><span>External assistant estimate · ${campaignBilling.assistant.requests} requests</span><small>${html(tokenLabel(campaignBilling.assistant.inputTokens + campaignBilling.assistant.cachedInputTokens))} in / ${html(tokenLabel(campaignBilling.assistant.outputTokens))} out</small></div>` : ""}
       <div class="billing-metric"><strong>${html(durationLabel(campaignBilling.agentRunDurationMs))}</strong><span>Agent execution time</span></div>
       <div class="billing-metric"><strong>${html(durationLabel(campaignBilling.leaseDurationMs))}</strong><span>Daytona lease time</span></div>
       <div class="billing-metric"><strong>${campaignBilling.llm.runsWithReportedCost}/${campaignBilling.llm.runCount}</strong><span>Runs provider-priced</span></div>
-      <p class="billing-note">Model spend is the provider-reported subtotal; unpriced or unavailable runs are excluded, never counted as free. Daytona runtime is a public-list-price estimate from captured lease time and pinned resources, before credits, discounts, storage allowance, or invoice adjustments. Local execution has no external runtime meter.</p>
+      <p class="billing-note">Campaign costs include retained attempts, including failed retries. Result cards show the selected attempt. Provider-reported amounts and model estimates are separate; unpriced or unavailable runs are excluded, never counted as free. Coverage describes captured usage; unobserved setup, subscriptions, tools, CI and storage require additional accounting. Daytona runtime is a public-list-price estimate from captured lease time and pinned resources, before credits, discounts, storage allowance, or invoice adjustments. Local execution has no external runtime meter.</p>
     </section></details>
-    </section>
     <div class="results-heading" id="results"><h2 data-results-title>All results</h2><span data-results-description></span></div>
     <div data-feature-coverage>${renderJourneyFeatureCoverage(catalog, entryById)}</div>
     <section class="report-filters" aria-label="Filter test results">

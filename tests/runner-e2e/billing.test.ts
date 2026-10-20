@@ -29,6 +29,32 @@ function result(overrides: Partial<RunnerE2EResult> = {}): RunnerE2EResult {
 }
 
 describe("runner E2E billing summaries", () => {
+  it("reads precise provider amounts without relabeling estimates or unpriced usage", () => {
+    const precise = summarizeExecutionBilling(result({ usage: {
+      inputTokens: 0, outputTokens: 0, cachedInputTokens: 5,
+      costUsdExact: "0.000000123", costStatus: "reported", accountingReceiptReady: true,
+    } }));
+    expect(precise.llm).toMatchObject({ reportedCostUsd: 0.000000123, runsWithReportedCost: 1, runsWithTokenUsage: 1 });
+    const estimated = summarizeExecutionBilling(result({ usage: {
+      inputTokens: 100, outputTokens: 10, costUsdExact: "0.012345678", costStatus: "estimated",
+    } }));
+    expect(estimated.llm).toMatchObject({ reportedCostUsd: 0, estimatedCostUsd: 0.012345678,
+      runsWithReportedCost: 0, runsWithEstimatedCost: 1, costStatus: "estimated" });
+    expect(estimated.observedAndEstimatedCostUsd).toBe(0.012345678);
+    const unpriced = summarizeExecutionBilling(result({ usage: {
+      inputTokens: 100, outputTokens: 10, costUsd: 0, costStatus: "unpriced",
+    } }));
+    expect(unpriced.llm).toMatchObject({ runsWithReportedCost: 0, costStatus: "unpriced" });
+  });
+
+  it("distinguishes explicit zero usage from a partial or missing receipt", () => {
+    const zero = summarizeExecutionBilling(result({ usage: { inputTokens: 0, outputTokens: 0, costUsdExact: "0", accountingReceiptReady: true } }));
+    expect(zero.complete).toBe(true);
+    const partial = summarizeExecutionBilling(result({ usage: { inputTokens: 100, outputTokens: 10, costUsd: 0.01, accountingReceiptReady: false } }));
+    expect(partial.reportedCostUsd).toBe(0.01);
+    expect(partial.complete).toBe(false);
+    expect(summarizeExecutionBilling(result({ usage: null })).complete).toBe(false);
+  });
   it("counts completion judge reservations and preserves unknown spend after interruption", () => {
     const pending = { ...reserveCompletionQuality({ sourceId: "chat", marker: "x", worker: { id: "task", status: "done", completedAt: "2026-09-01" }, documents: [{ id: "doc", issueId: "task", body: "result" }], comments: [{ id: "reply", issueId: "chat", authorAgentId: "agent", createdAt: "2026-09-02", body: "ready" }], runs: [] }, 0.5), name: "completion", expectedPass: true };
     const unknown = summarizeExecutionBilling(result({ completionQuality: [pending] }));

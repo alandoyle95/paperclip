@@ -469,6 +469,8 @@ async function runAttempt(input: {
   options: ReturnType<typeof parseRunnerSelectors>;
 }): Promise<RunnerE2EResult[]> {
   const { executions, attempt, campaignId, options } = input;
+  const accountingCampaignId = process.env.PAPERCLIP_E2E_ACCOUNTING_CAMPAIGN_ID ?? campaignId;
+  const accountingAttemptId = randomBytes(16).toString("hex");
   const execution = executions[0];
   if (!execution) throw new Error("A runner E2E cell must contain a task case");
   if (
@@ -545,6 +547,8 @@ async function runAttempt(input: {
         executions.map((candidate) => candidate.id),
       ),
       PAPERCLIP_RUNNER_E2E_ATTEMPT: String(attempt),
+      PAPERCLIP_E2E_ACCOUNTING_CAMPAIGN_ID: accountingCampaignId,
+      PAPERCLIP_E2E_ACCOUNTING_ATTEMPT_ID: accountingAttemptId,
       PAPERCLIP_RUNNER_E2E_INSTALLED_STARTUP_ONLY: options.installedStartupOnly ? "1" : undefined,
       PAPERCLIP_RUNNER_E2E_PUBLIC_MCP: executions.some(candidate => candidate.task.flow === "public_mcp") ? "1" : "0",
       PAPERCLIP_RUNNER_E2E_PORT: String(port),
@@ -712,7 +716,10 @@ async function runAttempt(input: {
       }
     }
     for (const [index, candidate] of executions.entries()) {
-      let result = results[index];
+      let result = {
+        ...results[index],
+        accountingIdentity: { campaignId: accountingCampaignId, attemptId: accountingAttemptId },
+      };
       if (
         isolationError &&
         result.failureClass !== "cleanup_failure" &&
@@ -932,6 +939,7 @@ async function runExecutionWithRetry(input: {
   execution: MatrixExecution;
   campaignId: string;
   options: ReturnType<typeof parseRunnerSelectors>;
+  onAttempt: (result: RunnerE2EResult) => void;
 }): Promise<RunnerE2EResult> {
   const { execution, campaignId, options } = input;
   return executeWithAutomaticRetry({
@@ -944,6 +952,7 @@ async function runExecutionWithRetry(input: {
     runAttempt: async attempt => {
       const [result] = await runAttempt({ executions: [execution], attempt, campaignId, options });
       if (!result) throw new Error(`No result produced for ${execution.id} attempt ${attempt}`);
+      input.onAttempt(result);
       return result;
     },
   });
@@ -1079,10 +1088,11 @@ async function main() {
   console.log(
     `Running ${executions.length} isolated execution(s) with max parallelism ${requestedParallelism}`,
   );
+  const attempts: RunnerE2EResult[] = [];
   const finalResults = await runWithConcurrency(
     executions,
     requestedParallelism,
-    (execution) => runExecutionWithRetry({ execution, campaignId, options }),
+    (execution) => runExecutionWithRetry({ execution, campaignId, options, onAttempt: result => attempts.push(result) }),
   );
 
   const generatedAt = new Date().toISOString();
@@ -1091,6 +1101,7 @@ async function main() {
     generatedAt,
     expected: executions.map((execution) => execution.id),
     results: finalResults,
+    attempts,
   });
   const campaignSecrets = normalizedSecrets(
     CREDENTIAL_NAMES.map((name) => process.env[name]),

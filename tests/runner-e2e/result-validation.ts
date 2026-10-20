@@ -1,6 +1,6 @@
 import { connectionCheckpoints, connectionEvidencePasses, connectionRunSignals } from "./connection-evidence.js";
 import { STARTUP_REUSE_LAYERS, STARTUP_REUSE_REASONS } from "../../packages/adapter-utils/src/startup-reuse.js";
-import type { RunnerE2EResult } from "./types.js";
+import type { RunnerE2ECampaignAccounting, RunnerE2EResult } from "./types.js";
 
 type Rule = (value: unknown, at: string) => void;
 const invalid = (at: string): never => {
@@ -105,12 +105,14 @@ const llm = shape({
   runCount: integer,
   runsWithTokenUsage: integer,
   runsWithReportedCost: integer,
+  runsWithEstimatedCost: optional(integer),
   inputTokens: number,
   outputTokens: number,
   cachedInputTokens: number,
   totalTokens: number,
   reportedCostUsd: number,
-  costStatus: oneOf("reported", "partial", "unpriced", "unavailable"),
+  estimatedCostUsd: optional(number),
+  costStatus: oneOf("reported", "estimated", "partial", "unpriced", "unavailable"),
 });
 const billing = shape({
   judge: optional(shape({ inputTokens: nullable(number), outputTokens: nullable(number), estimatedCostUsd: nullable(number), reservedCostUsd: number })),
@@ -122,6 +124,21 @@ const billing = shape({
   observedAndEstimatedCostUsd: nullable(number),
   complete: boolean,
 });
+
+export function validateCampaignAccounting(value: RunnerE2ECampaignAccounting) {
+  shape({
+    version: (version, at) => { if (version !== 1) invalid(at); },
+    scope: oneOf("retained_attempts", "selected_results"),
+    missingAttempts: integer,
+    excludedArtifacts: integer,
+    attempts: array(shape({
+      id: string, executionId: string, attempt: integer,
+      startedAt: date, finishedAt: date, durationMs: number,
+      status: oneOf("passed", "failed"), cleanup: oneOf("not_started", "passed", "failed"), billing,
+    })),
+  })(value, "accounting");
+  if (new Set(value.attempts.map(attempt => attempt.id)).size !== value.attempts.length) invalid("accounting.attempts duplicate id");
+}
 const matcher: Rule = (value, at) => {
   object(value, at);
   const item = value as Record<string, unknown>;
@@ -149,6 +166,7 @@ const matcher: Rule = (value, at) => {
   rule(value, at);
 };
 const fields = {
+  accountingIdentity: optional(shape({ campaignId: string, attemptId: string })),
   publicMcp: optional(assistant),
   schema: oneOf(
     "paperclip.runner-e2e.result/v1",

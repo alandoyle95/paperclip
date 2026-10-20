@@ -10,6 +10,7 @@ import {
 } from "node:fs/promises";
 import { runnerMatrix } from "./catalog.js";
 import { billingCoverageLabel, summarizeExecutionBilling } from "./billing.js";
+import { retainedCampaignAttempts } from "./attempt-accounting.js";
 import { renderRunnerE2EDashboard } from "./dashboard.js";
 import {
   buildRunnerCampaign,
@@ -176,6 +177,9 @@ async function main() {
   const resultFiles = (await walk(root)).filter(
     (file) => path.basename(file) === "result.json",
   );
+  const requestedCampaignId = process.env.PAPERCLIP_E2E_CAMPAIGN_ID ??
+    (process.env.GITHUB_RUN_ID ? `gha-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT ?? "1"}` : undefined);
+  let excludedArtifacts = 0;
   const candidates = new Map<string, AggregatedResult[]>();
   for (const resultFile of resultFiles) {
     const parsed = JSON.parse(
@@ -187,6 +191,11 @@ async function main() {
     )
       continue;
     const result = upgradeRunnerResult(parsed);
+    if (requestedCampaignId && result.accountingIdentity &&
+        result.accountingIdentity.campaignId !== requestedCampaignId) {
+      excludedArtifacts += 1;
+      continue;
+    }
     const directory = path.dirname(resultFile);
     const evidence = await readFile(
       path.join(directory, "evidence-manifest.json"),
@@ -286,15 +295,18 @@ async function main() {
     billing: summarizeExecutionBilling(entry.result),
   }));
   const generatedAt = new Date().toISOString();
+  const retained = retainedCampaignAttempts(
+    selected.map(entry => entry.result),
+    [...candidates.values()].flatMap(entries => entries.map(entry => entry.result)),
+  );
   const campaign = buildRunnerCampaign({
     campaignId:
-      process.env.PAPERCLIP_E2E_CAMPAIGN_ID ??
-      (process.env.GITHUB_RUN_ID
-        ? `gha-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT ?? "1"}`
-        : `report-${generatedAt.replace(/[:.]/g, "-")}`),
+      requestedCampaignId ?? `report-${generatedAt.replace(/[:.]/g, "-")}`,
     generatedAt,
     expected,
     results: resolvedResults,
+    attempts: retained.attempts,
+    excludedArtifacts: excludedArtifacts + retained.excludedArtifacts,
   });
   const billing = campaign.billing;
   const normalized = {
@@ -358,6 +370,8 @@ async function main() {
     `Tokens: ${billingCoverageLabel(`${billing.llm.inputTokens} input / ${billing.llm.outputTokens} output / ${billing.llm.cachedInputTokens} cached`, billing.llm.runsWithTokenUsage, billing.llm.runCount)}`,
     "",
     `Provider-reported LLM cost: ${billingCoverageLabel(`$${billing.reportedLlmCostUsd.toFixed(6)}`, billing.llm.runsWithReportedCost, billing.llm.runCount)}`,
+    `Estimated LLM cost: ${billingCoverageLabel(`$${(billing.estimatedLlmCostUsd ?? 0).toFixed(6)}`, billing.llm.runsWithEstimatedCost ?? 0, billing.llm.runCount)}`,
+    `Accounting: ${campaign.accounting!.attempts.length} retained attempts; ${campaign.accounting!.missingAttempts} missing attempts; ${campaign.accounting!.excludedArtifacts} out-of-scope artifacts excluded. Costs cover captured usage, not unobserved setup or external charges.`,
     "",
     `Estimated Daytona list-price runtime cost: $${billing.estimatedRuntimeCostUsd.toFixed(6)}`,
     ...(billing.judge ? [`Estimated judge cost: ${billing.judge.estimatedCostUsd === null ? "unknown" : `$${billing.judge.estimatedCostUsd.toFixed(6)}`}; ${billing.judge.attempts} attempts; ${billing.judge.attemptsWithUnknownUsage} with unknown usage; $${billing.judge.reservedCostUsd.toFixed(6)} reserved`] : []),

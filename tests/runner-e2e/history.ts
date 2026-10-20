@@ -1,6 +1,7 @@
 import { isIncompleteFirstTaskResult } from "./case-outcome.js";
+import { buildCampaignAccounting } from "./attempt-accounting.js";
 import { summarizeStartupReuse } from "../../packages/adapter-utils/src/startup-reuse.js";
-import { validateRetainedRunnerResult } from "./result-validation.js";
+import { validateCampaignAccounting, validateRetainedRunnerResult } from "./result-validation.js";
 import {
   discoverReportCatalog,
   parseReportExecutionId,
@@ -8,12 +9,13 @@ import {
 } from "./report-catalog.js";
 import { runnerMatrix, runnerSuites } from "./catalog.js";
 import {
-  aggregateCampaignBilling,
+  aggregateBillingSummaries,
   summarizeExecutionBilling,
 } from "./billing.js";
 import { resolveRunnerE2ESource } from "./source.js";
 import type {
   RunnerE2ECampaign,
+  RunnerE2ECampaignAccounting,
   RunnerE2EHistoryCampaign,
   RunnerE2EHistoryIndex,
   RunnerE2EResult,
@@ -65,6 +67,9 @@ export function buildRunnerCampaign(input: {
   generatedAt: string;
   expected: readonly string[];
   results: readonly RunnerE2EResult[];
+  attempts?: readonly RunnerE2EResult[];
+  accounting?: RunnerE2ECampaignAccounting;
+  excludedArtifacts?: number;
   eventName?: string | null;
   catalog?: readonly ReportExecution[];
 }): RunnerE2ECampaign {
@@ -73,6 +78,29 @@ export function buildRunnerCampaign(input: {
     ...upgradeRunnerResult(result),
     billing: result.billing ?? summarizeExecutionBilling(result),
   }));
+  const accounting = input.accounting ?? buildCampaignAccounting({
+    results,
+    attempts: input.attempts?.map(upgradeRunnerResult),
+    excludedArtifacts: input.excludedArtifacts,
+  });
+  validateCampaignAccounting(accounting);
+  const billingFor = (selectedResults: readonly RunnerE2EResult[]) => {
+    const ids = new Set(selectedResults.map(result => result.executionId));
+    const receipts = accounting.attempts.filter(attempt => ids.has(attempt.executionId));
+    const billing = aggregateBillingSummaries([
+      ...receipts,
+      // Preserve unavailable coverage for missing artifacts instead of turning
+      // a campaign that never started into a measured zero-dollar campaign.
+      ...selectedResults.filter(result => !receipts.some(attempt => attempt.executionId === result.executionId))
+        .map(result => ({ executionId: result.executionId, billing: summarizeExecutionBilling(result) })),
+    ]);
+    billing.testsWithCompleteBilling = selectedResults.filter(result => {
+      const retained = receipts.filter(attempt => attempt.executionId === result.executionId);
+      return retained.length > 0 && retained.every(attempt => attempt.billing.complete) &&
+        new Set(retained.map(attempt => attempt.attempt)).size >= Math.max(result.attempt, ...retained.map(attempt => attempt.attempt));
+    }).length;
+    return billing;
+  };
   const knownCatalog = input.catalog ?? runnerMatrix;
   const catalog = discoverReportCatalog({
     catalog: knownCatalog,
@@ -144,7 +172,7 @@ export function buildRunnerCampaign(input: {
           (total, result) => total + result.durationMs,
           0,
         ),
-        billing: aggregateCampaignBilling(suiteResults),
+        billing: billingFor(suiteResults),
       };
     })
     .filter((suite): suite is NonNullable<typeof suite> => Boolean(suite));
@@ -189,7 +217,8 @@ export function buildRunnerCampaign(input: {
     ),
     cleanupPassed: results.every((result) => result.cleanup === "passed"),
     rankingSnapshots,
-    billing: aggregateCampaignBilling(results),
+    billing: billingFor(results),
+    accounting,
     suites,
     results,
   };

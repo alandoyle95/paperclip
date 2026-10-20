@@ -36,6 +36,7 @@ export interface CampaignBillingSummary {
   leaseDurationMs: number;
   llm: RunnerE2EBillingSummary["llm"];
   reportedLlmCostUsd: number;
+  estimatedLlmCostUsd?: number;
   estimatedRuntimeCostUsd: number;
   observedAndEstimatedCostUsd: number | null;
   testsWithCompleteBilling: number;
@@ -47,6 +48,13 @@ export function billingCoverageLabel(value: string, covered: number, total: numb
     return "Unavailable";
   }
   return covered < total ? `${value} (partial: ${covered}/${total} runs)` : value;
+}
+
+function costCoverageStatus(runs: number, tokens: number, reported: number, estimated: number): RunnerE2EBillingSummary["llm"]["costStatus"] {
+  if (runs > 0 && reported === runs) return "reported";
+  if (runs > 0 && reported + estimated === runs) return "estimated";
+  if (reported + estimated > 0) return "partial";
+  return tokens > 0 ? "unpriced" : "unavailable";
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -92,13 +100,13 @@ function usageMeasurement(usage: Record<string, unknown>) {
 }
 
 function usageCostUsd(usage: Record<string, unknown>) {
+  if (usage.costStatus === "unpriced" || usage.billingType === "subscription") return undefined;
   const measurement = usageMeasurement(usage);
+  const exact = typeof usage.costUsdExact === "string" && /^\d+(?:\.\d+)?$/.test(usage.costUsdExact)
+    ? finiteNumber(Number(usage.costUsdExact)) : undefined;
   const direct =
-    firstNumber(usage, [
-      "cacheAdjustedCostUsd",
-      "costUsd",
-      "providerCostUsd",
-    ]) ??
+    firstNumber(usage, ["cacheAdjustedCostUsd"]) ?? exact ??
+    firstNumber(usage, ["costUsd", "providerCostUsd"]) ??
     firstNumber(measurement, [
       "cacheAdjustedCostUsd",
       "costUsd",
@@ -268,7 +276,10 @@ export function summarizeExecutionBilling(
   let cachedInputTokens = 0;
   let runsWithTokenUsage = 0;
   let runsWithReportedCost = 0;
+  let runsWithEstimatedCost = 0;
   let reportedCostUsd = 0;
+  let estimatedCostUsd = 0;
+  let incompleteReceipt = false;
   for (const usage of entries) {
     if (!usage) continue;
     const measurement = usageMeasurement(usage);
@@ -289,31 +300,33 @@ export function summarizeExecutionBilling(
     inputTokens += input;
     outputTokens += output;
     cachedInputTokens += cached;
-    if (input > 0 || output > 0 || cached > 0) runsWithTokenUsage += 1;
+    const completeTokens = firstNumber(measurement, ["inputTokens", "input", "promptTokens"]) !== undefined &&
+      firstNumber(measurement, ["outputTokens", "output", "completionTokens"]) !== undefined && usage.accountingReceiptReady !== false;
+    if (completeTokens) runsWithTokenUsage += 1;
+    if (usage.accountingReceiptReady === false) incompleteReceipt = true;
     const costUsd = usageCostUsd(usage);
-    if (costUsd !== undefined && (costUsd > 0 || input > 0 || output > 0)) {
-      runsWithReportedCost += 1;
-      reportedCostUsd += costUsd;
+    if (costUsd !== undefined) {
+      if (usage.costStatus === "estimated") {
+        runsWithEstimatedCost += 1;
+        estimatedCostUsd += costUsd;
+      } else {
+        runsWithReportedCost += 1;
+        reportedCostUsd += costUsd;
+      }
     }
   }
   const runCount = Math.max(requestedRunCount, entries.length);
-  const costStatus =
-    runsWithReportedCost === runCount
-      ? "reported"
-      : runsWithReportedCost > 0
-        ? "partial"
-        : runsWithTokenUsage > 0
-          ? "unpriced"
-          : "unavailable";
+  const costStatus = costCoverageStatus(runCount, runsWithTokenUsage, runsWithReportedCost, runsWithEstimatedCost);
   const runtime = fallbackRuntimeUsage(result);
   const estimatedRuntimeCostUsd = runtime.estimatedListCostUsd ?? 0;
   const judgments = [...(result.firstTaskQuality ? [result.firstTaskQuality] : []), ...(result.completionQuality ?? [])];
   const sumKnown = (key: "inputTokens" | "outputTokens" | "estimatedCostUsd") => judgments.some(q => q[key] === null) ? null : judgments.reduce((sum, q) => sum + (q[key] ?? 0), 0);
   const quality = judgments.length ? { inputTokens: sumKnown("inputTokens"), outputTokens: sumKnown("outputTokens"), estimatedCostUsd: sumKnown("estimatedCostUsd"), reservedCostUsd: judgments.reduce((sum, q) => sum + q.reservedCostUsd, 0) } : undefined;
   const complete =
+    !incompleteReceipt &&
     (!quality || quality.estimatedCostUsd !== null) &&
     runsWithTokenUsage === runCount &&
-    runsWithReportedCost === runCount &&
+    runsWithReportedCost + runsWithEstimatedCost === runCount &&
     runtime.costStatus !== "unavailable";
   return {
     ...(result.publicMcp ? { assistant: result.publicMcp } : {}),
@@ -321,18 +334,20 @@ export function summarizeExecutionBilling(
       runCount,
       runsWithTokenUsage,
       runsWithReportedCost,
+      runsWithEstimatedCost,
       inputTokens,
       outputTokens,
       cachedInputTokens,
       totalTokens: inputTokens + cachedInputTokens + outputTokens,
       reportedCostUsd,
+      estimatedCostUsd,
       costStatus,
     },
     runtime,
     reportedCostUsd,
     estimatedRuntimeCostUsd,
     ...(quality ? { judge: { inputTokens: quality.inputTokens, outputTokens: quality.outputTokens, estimatedCostUsd: quality.estimatedCostUsd, reservedCostUsd: quality.reservedCostUsd } } : {}),
-    observedAndEstimatedCostUsd: quality?.estimatedCostUsd === null ? null : reportedCostUsd + estimatedRuntimeCostUsd + (quality?.estimatedCostUsd ?? 0) + (result.publicMcp?.estimatedCostUsd ?? 0),
+    observedAndEstimatedCostUsd: quality?.estimatedCostUsd === null ? null : reportedCostUsd + estimatedCostUsd + estimatedRuntimeCostUsd + (quality?.estimatedCostUsd ?? 0) + (result.publicMcp?.estimatedCostUsd ?? 0),
     complete,
   };
 }
@@ -340,7 +355,16 @@ export function summarizeExecutionBilling(
 export function aggregateCampaignBilling(
   results: readonly RunnerE2EResult[],
 ): CampaignBillingSummary {
-  const summaries = results.map(summarizeExecutionBilling);
+  return aggregateBillingSummaries(results.map(result => ({
+    executionId: result.executionId, billing: summarizeExecutionBilling(result),
+  })));
+}
+
+export function aggregateBillingSummaries(
+  entries: readonly { executionId: string; billing: RunnerE2EBillingSummary }[],
+): CampaignBillingSummary {
+  const summaries = entries.map(entry => entry.billing);
+  const executionIds = [...new Set(entries.map(entry => entry.executionId))];
   const runCount = summaries.reduce(
     (total, summary) => total + summary.llm.runCount,
     0,
@@ -357,6 +381,8 @@ export function aggregateCampaignBilling(
     (total, summary) => total + summary.reportedCostUsd,
     0,
   );
+  const runsWithEstimatedCost = summaries.reduce((sum, summary) => sum + (summary.llm.runsWithEstimatedCost ?? 0), 0);
+  const estimatedLlmCostUsd = summaries.reduce((sum, summary) => sum + (summary.llm.estimatedCostUsd ?? 0), 0);
   const estimatedRuntimeCostUsd = summaries.reduce(
     (total, summary) => total + summary.estimatedRuntimeCostUsd,
     0,
@@ -379,7 +405,7 @@ export function aggregateCampaignBilling(
       reservedCostUsd: judges.reduce((n, q) => n + q.reservedCostUsd, 0),
       attemptsWithUnknownUsage: judges.filter(q => q.estimatedCostUsd === null).length,
     } } : {}),
-    testCount: results.length,
+    testCount: executionIds.length,
     agentRunDurationMs: summaries.reduce(
       (total, summary) => total + summary.runtime.agentRunDurationMs,
       0,
@@ -392,6 +418,7 @@ export function aggregateCampaignBilling(
       runCount,
       runsWithTokenUsage,
       runsWithReportedCost,
+      runsWithEstimatedCost,
       inputTokens: summaries.reduce(
         (total, summary) => total + summary.llm.inputTokens,
         0,
@@ -409,19 +436,14 @@ export function aggregateCampaignBilling(
         0,
       ),
       reportedCostUsd: reportedLlmCostUsd,
-      costStatus:
-        runsWithReportedCost === runCount
-          ? "reported"
-          : runsWithReportedCost > 0
-            ? "partial"
-            : runsWithTokenUsage > 0
-              ? "unpriced"
-              : "unavailable",
+      estimatedCostUsd: estimatedLlmCostUsd,
+      costStatus: costCoverageStatus(runCount, runsWithTokenUsage, runsWithReportedCost, runsWithEstimatedCost),
     },
     reportedLlmCostUsd,
+    estimatedLlmCostUsd,
     estimatedRuntimeCostUsd,
     observedAndEstimatedCostUsd: summaries.some(s => s.observedAndEstimatedCostUsd === null) ? null : summaries.reduce((total, summary) => total + (summary.observedAndEstimatedCostUsd ?? 0), 0),
-    testsWithCompleteBilling: summaries.filter((summary) => summary.complete)
-      .length,
+    testsWithCompleteBilling: executionIds.filter(id =>
+      entries.filter(entry => entry.executionId === id).every(entry => entry.billing.complete)).length,
   };
 }

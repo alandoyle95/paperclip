@@ -295,13 +295,14 @@ describe("runner E2E report aggregation", () => {
       },
     });
     expect(normalized.billing).toMatchObject({
-      reportedLlmCostUsd: 0.0125,
+      reportedLlmCostUsd: 0.025,
       llm: {
-        inputTokens: 1_250,
-        outputTokens: 75,
-        runsWithReportedCost: 1,
+        inputTokens: 2_500,
+        outputTokens: 150,
+        runsWithReportedCost: 2,
       },
     });
+    expect(normalized.accounting.attempts).toHaveLength(2);
     expect(normalized.results[0]).toMatchObject({
       attempt: 2,
       evidenceValid: true,
@@ -317,6 +318,7 @@ describe("runner E2E report aggregation", () => {
       "utf8",
     );
     expect(dashboard).toContain("Runner Full-Stack E2E");
+    expect(dashboard).toMatch(/\$0\.0250*<\/strong><span>LLM reported subtotal/);
     expect(dashboard).toContain(executionId);
     expect(dashboard).toContain("case-passed");
     expect(dashboard).not.toContain(
