@@ -702,7 +702,8 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
       !failedRun ||
       !failedRun.wakeupRequestId ||
       (!input.committedResponse &&
-        (!["failed", "timed_out"].includes(failedRun.status) ||
+        (!(["failed", "timed_out"].includes(failedRun.status) ||
+            (input.taskRetryIntentId && failedRun.status === "cancelled")) ||
           !failedRun.finishedAt)) ||
       (!input.committedResponse && !input.taskRetryIntentId &&
         failedRun.runtimeMode !== "native" &&

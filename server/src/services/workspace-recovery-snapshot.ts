@@ -7,13 +7,14 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { and, desc, eq, sql } from "drizzle-orm";
-import { workspaceOperations, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, heartbeatRuns, issueRecoveryActions, workspaceOperations, type Db } from "@paperclipai/db";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { createCommandManagedRuntimeClient } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { createTarballFromDirectory, exportSandboxWorkspaceSnapshot, restoreVerifiedSnapshotArchive } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
 import { captureDirectorySnapshotOffThread, disposeDirectorySnapshot } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { getStorageService, type StorageService } from "../storage/index.js";
 import { SystemRecoveryFailure } from "./system-recovery-state.js";
+import { canonicalExecutionUuid } from "./execution-identity.js";
 
 const storedFileSchema = z.object({ objectKey: z.string().min(1), sha256: z.string().regex(/^[a-f0-9]{64}$/), byteSize: z.number().int().positive() });
 type StoredFile = z.infer<typeof storedFileSchema>;
@@ -145,7 +146,39 @@ export async function attachPreservedWorkspaceSnapshots(input: {
 }) {
   const storage = getStorageService();
   const results: Array<{ operationId: string; path: string; sourceRunId: string }> = [];
-  for (const sourceRunId of input.sourceRunIds) {
+  // Follow committed predecessor receipts, not transcript paths. UNION makes
+  // cycles and duplicate receipts finite; every edge retains company/task scope.
+  const sources = await input.db.execute<{ id: string }>(sql`
+    with recursive sources(id) as (
+      select r.id from ${heartbeatRuns} r
+      where r.company_id = ${input.companyId}
+        and coalesce(r.native_issue_id::text, r.issue_id::text, r.context_snapshot->>'issueId') = ${input.issueId}
+        and r.id in (select ${canonicalExecutionUuid(sql`value`)}
+          from jsonb_array_elements_text(${JSON.stringify(input.sourceRunIds)}::jsonb))
+      union
+      select predecessor.id from sources s
+      join ${heartbeatRuns} current_run on current_run.id = s.id
+      cross join lateral (
+        select current_run.retry_of_run_id::text as id
+        union
+        select w.payload#>>'{taskRetry,sourceRunId}' from ${agentWakeupRequests} w
+        where w.company_id = ${input.companyId} and w.run_id = s.id
+          and w.reason = 'task_retry' and w.status = 'coalesced'
+          and w.requested_by_actor_type = 'user' and w.payload->>'issueId' = ${input.issueId}
+          and w.payload#>>'{taskRetry,schema}' = 'paperclip.task-retry.v1'
+          and w.payload#>>'{taskRetry,generationId}' = w.id::text
+        union
+        select a.evidence->>'runId' from ${issueRecoveryActions} a
+        where a.company_id = ${input.companyId} and a.source_issue_id = ${input.issueId}
+          and a.evidence#>>'{explicitUserContinuation,runId}' = s.id::text
+      ) edge
+      join ${heartbeatRuns} predecessor on predecessor.id = ${canonicalExecutionUuid(sql`edge.id`)}
+        and predecessor.company_id = ${input.companyId}
+        and coalesce(predecessor.native_issue_id::text, predecessor.issue_id::text,
+          predecessor.context_snapshot->>'issueId') = ${input.issueId}
+    ) select id from sources
+  `);
+  for (const { id: sourceRunId } of sources) {
     const rows = await input.db.select().from(workspaceOperations).where(and(
       eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.issueId, input.issueId),
       eq(workspaceOperations.heartbeatRunId, sourceRunId), eq(workspaceOperations.phase, "workspace_recovery_snapshot"),

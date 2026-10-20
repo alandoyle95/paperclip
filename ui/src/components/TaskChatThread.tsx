@@ -2610,12 +2610,15 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const hasAgentAssignee = Boolean(issueAssigneeAgentId);
   const [runnerSubmissionPending, setRunnerSubmissionPending] = useState(false);
   const [submissionTakingLonger, setSubmissionTakingLonger] = useState(false);
+  const submissionRequestId = useRef<string | null>(null);
   useEffect(() => {
-    if (tailRunId || (props.interruption && props.interruption.state !== "working")) {
+    const confirmed = submissionRequestId.current && comments.some(comment =>
+      comment.clientRequestId === submissionRequestId.current && !("clientStatus" in comment && comment.clientStatus));
+    if (tailRunId || confirmed || (props.interruption && props.interruption.state !== "working")) {
       setRunnerSubmissionPending(false);
       setSubmissionTakingLonger(false);
     }
-  }, [tailRunId, props.interruption]);
+  }, [tailRunId, props.interruption, comments, runnerSubmissionPending]);
   useEffect(() => {
     if (!runnerSubmissionPending || tailRunId) return;
     const timeout = window.setTimeout(
@@ -2630,11 +2633,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const handleThreadAdd = useCallback(
     async (...args: Parameters<typeof onAdd>) => {
       if (hasAgentAssignee) {
+        submissionRequestId.current = args[4] ?? null;
         setRunnerSubmissionPending(true);
         setSubmissionTakingLonger(false);
       }
       try {
         await onAdd(...args);
+        setRunnerSubmissionPending(false);
+        setSubmissionTakingLonger(false);
         if (selectedPendingInput?.kind === "durable" && selectedPendingInput.interaction.kind === "ask_user_questions") {
           dismissQuestion(selectedPendingInput.interaction.id);
           setSelectedPendingKey(null);
@@ -3040,7 +3046,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               >
                 {prepareInitialContent ? (
                   <>
-                    {items.length === 0 && !tailRunId ? (
+                    {items.length === 0 && !tailRunId && !optimisticRunnerStartup ? (
                       <div
                         className={
                           isMobile ? undefined : "min-h-0 flex-1 overflow-y-auto"

@@ -60728,13 +60728,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     },
   );
 
-  it.each(["stopped", "real_queue", "unknown_executor", "source_edited"] as const)(
+  it.each(["stopped", "real_queue", "unknown_executor", "source_edited", "cancelled_stopped", "cancelled_unknown"] as const)(
     "admits ordinary chat task Retry with a missing checkpoint only after containment: %s", async kind => {
       const context = await failedChatRetryFixture("telegram", undefined, kind === "real_queue");
       try {
         await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: context.issue.id,
           nativePhase: "terminal_failure", errorCode: "runner_remote_process_identity_unavailable",
           runnerProfileJson: {},
+          ...(kind.startsWith("cancelled_") ? { status: "cancelled" } : {}),
         }).where(eq(heartbeatRuns.id, context.runId));
         await db.insert(nativeRunFinalizations).values({ companyId: context.fixture.companyId,
           issueId: context.issue.id, runId: context.runId, phase: "terminal_failure" });
@@ -60742,7 +60743,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           agentId: context.fixture.assignedAgentId, failedRunId: context.runId, initiatedByUserId: "owner-user" };
         await expect(db.transaction(tx => context.service.prepareFailedChatRunRetry(tx, exact)))
           .rejects.toMatchObject({ details: { code: "chat_failed_run_retry_not_authorized" } });
-        if (kind !== "unknown_executor") await db.insert(heartbeatRunEvents).values({
+        if (kind !== "unknown_executor" && kind !== "cancelled_unknown") await db.insert(heartbeatRunEvents).values({
           companyId: context.fixture.companyId, agentId: context.fixture.assignedAgentId, runId: context.runId,
           seq: 1, eventType: "native.local_process_stopped", payload: { processPid: 999999999, processGroupId: null },
         });
@@ -60765,7 +60766,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           context.wakeup.mockImplementation(heartbeatService(db).wakeup);
         }
         const outcome = await context.service.processFailedChatRunRetry(receipt.chatActionId!);
-        if (kind === "stopped" || kind === "real_queue") {
+        if (kind === "stopped" || kind === "real_queue" || kind === "cancelled_stopped") {
           expect(outcome).toMatchObject({ status: "queued" });
           const [wake] = await readAgentWakeupRequestsById(receipt.chatActionId!);
           expect(wake, JSON.stringify({

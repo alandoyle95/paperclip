@@ -1843,7 +1843,11 @@ function StreamlinedInbox({
           idempotencyKey = crypto.randomUUID();
           retryRequestKeys.current.set(run.id, idempotencyKey);
         }
-        const result = await issuesApi.retryTask(issueId, { idempotencyKey, observedRunId: run.id });
+        const result = await issuesApi.retryTask(issueId, { idempotencyKey, observedRunId: run.id }).catch(error => {
+          if (error instanceof ApiError && error.status >= 400 && error.status < 500)
+            retryRequestKeys.current.delete(run.id);
+          throw error;
+        });
         queryClient.setQueryData<Issue>(queryKeys.issues.detail(issueId), current =>
           current ? { ...current, interruption: result.presentation } : current);
         return { newRun: { runId: null, issueId }, originalRun: run };
@@ -1866,9 +1870,7 @@ function StreamlinedInbox({
         navigate(`/agents/${originalRun.agentId}/runs/${newRun.runId}`);
       else if (newRun.issueId) navigate(`/issues/${newRun.issueId}`);
     },
-    onError: (error, run) => {
-      if (error instanceof ApiError && error.status >= 400 && error.status < 500)
-        retryRequestKeys.current.delete(run.id);
+    onError: (error) => {
       pushToast({
         title: "Run retry failed",
         body: error instanceof Error ? error.message : "Unable to retry run",

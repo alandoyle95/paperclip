@@ -6097,12 +6097,15 @@ export function IssueChatThread({
 
   const [submissionPending, setSubmissionPending] = useState(false);
   const [submissionTakingLonger, setSubmissionTakingLonger] = useState(false);
+  const submissionRequestId = useRef<string | null>(null);
   useEffect(() => {
-    if (isRunning || (interruption && interruption.state !== "working")) {
+    const confirmed = submissionRequestId.current && comments.some(comment =>
+      comment.clientRequestId === submissionRequestId.current && !("clientStatus" in comment && comment.clientStatus));
+    if (isRunning || confirmed || (interruption && interruption.state !== "working")) {
       setSubmissionPending(false);
       setSubmissionTakingLonger(false);
     }
-  }, [isRunning, interruption]);
+  }, [isRunning, interruption, comments, submissionPending]);
   useEffect(() => {
     if (!submissionPending) return;
     const timer = window.setTimeout(() => {
@@ -6115,13 +6118,16 @@ export function IssueChatThread({
     async (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings) => {
       pendingSubmitScrollRef.current = true;
       if (issueAssigneeAgentId) {
+        submissionRequestId.current = clientRequestId ?? null;
         setSubmissionPending(true);
         setSubmissionTakingLonger(false);
       }
       try {
-        return await (runSettings
+        await (runSettings
           ? onAdd(body, reopen, reassignment, attachmentIds, clientRequestId, runSettings)
           : onAdd(body, reopen, reassignment, attachmentIds, clientRequestId));
+        setSubmissionPending(false);
+        setSubmissionTakingLonger(false);
       } catch (error) {
         setSubmissionPending(error instanceof CommentSubmissionUnknownError);
         setSubmissionTakingLonger(error instanceof CommentSubmissionUnknownError);

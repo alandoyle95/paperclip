@@ -240,6 +240,38 @@ describe("automatic retained workspace recovery", () => {
     expect((await run(f.runId)).status).toBe("failed");
   }, 30_000);
 
+  it("keeps earlier recovered snapshots readable across repeated fresh retries", async () => {
+    const f = await seed("legacy", false);
+    await recoverRetainedWorkspace(f.input);
+    const source = await run(f.runId);
+    const replacementId = randomUUID(), laterId = randomUUID(), intentId = randomUUID();
+    await db.insert(heartbeatRuns).values([
+      { id: replacementId, companyId: f.companyId, agentId: source.agentId,
+        status: "failed", contextSnapshot: { issueId: f.issueId } },
+      { id: laterId, companyId: f.companyId, agentId: source.agentId,
+        status: "failed", retryOfRunId: replacementId, contextSnapshot: { issueId: f.issueId } },
+    ]);
+    await db.insert(agentWakeupRequests).values({
+      id: intentId, companyId: f.companyId, agentId: source.agentId, runId: replacementId,
+      source: "on_demand", triggerDetail: "manual", reason: "task_retry", status: "coalesced",
+      requestedByActorType: "user", requestedByActorId: "owner-user",
+      payload: { issueId: f.issueId, taskRetry: { schema: "paperclip.task-retry.v1",
+        generationId: intentId, sourceRunId: f.runId, actorId: "owner-user", strategy: "fresh_isolated_workspace" } },
+    });
+    const first = path.join(root, randomUUID()), next = path.join(root, randomUUID());
+    await mkdir(first); await mkdir(next);
+    await attachPreservedWorkspaceSnapshots({ db, companyId: f.companyId, issueId: f.issueId,
+      sourceRunIds: [f.runId], cwd: first });
+    const attached = await attachPreservedWorkspaceSnapshots({ db, companyId: f.companyId, issueId: f.issueId,
+      sourceRunIds: [laterId], cwd: next });
+    expect(attached).toHaveLength(1);
+    expect(attached[0].sourceRunId).toBe(f.runId);
+    expect(await readFile(path.join(attached[0].path, "files", "saved.txt"), "utf8")).toBe("finished work\n");
+    expect(await readFile(path.join(attached[0].path, "provenance.json"), "utf8")).toContain(f.runId);
+    expect(await attachPreservedWorkspaceSnapshots({ db, companyId: f.companyId, issueId: randomUUID(),
+      sourceRunIds: [laterId], cwd: next })).toEqual([]);
+  }, 30_000);
+
   it("reconciles an uploaded snapshot after a lost upload acknowledgement without exporting again", async () => {
     const f = await seed("legacy", false);
     const target = targets.get(f.lease.id)!;

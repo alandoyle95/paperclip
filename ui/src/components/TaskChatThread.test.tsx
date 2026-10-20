@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TaskChatThread } from "./TaskChatThread";
+import { IssueChatThread } from "./IssueChatThread";
 import type {
   Agent,
   IssueDocument,
@@ -81,6 +82,7 @@ vi.mock("@/hooks/useStreamlinedUiEnabled", () => ({
   }),
 }));
 vi.mock("@/lib/router", () => ({
+  useLocation: () => ({ pathname: "/issues/issue", hash: "", search: "", key: "test", state: null }),
   Link: ({
     to,
     children,
@@ -401,6 +403,26 @@ it("shows Thinking during admission and clears it when the saved follow-up enter
   show(true);
   expect(container.textContent).not.toContain("Thinking");
   expect(container.textContent).not.toContain("Working");
+});
+
+it.each(["task", "legacy"] as const)("clears %s admission Thinking when a message is saved without starting a run", async surface => {
+  let acknowledge!: () => void;
+  const onAdd = vi.fn(() => new Promise<void>(resolve => { acknowledge = resolve; }));
+  const Component = surface === "task" ? TaskChatThread : IssueChatThread;
+  render(<Component comments={[]} issueId="issue" issueAssigneeAgentId="agent"
+    issueStatus="todo" onAdd={onAdd} interruption={null}
+    agentMap={new Map([["agent", { id: "agent", name: "Worker", adapterType: "paperclip_runner" } as Agent]])} />);
+  await act(async () => { editorCallbacks.change("Save this note."); });
+  const send = surface === "task"
+    ? container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')
+    : [...container.querySelectorAll("button")].find(button => button.textContent === "Send");
+  expect(send).toBeDefined();
+  await act(async () => { send!.click(); });
+  expect(onAdd).toHaveBeenCalledTimes(1);
+  expect(container.textContent).toContain("Thinking");
+  await act(async () => { acknowledge(); });
+  expect(container.textContent).not.toContain("Thinking");
+  expect(container.textContent).not.toContain("Taking longer than usual");
 });
 
 it("prepares comment-link history and its composer before reveal", async () => {
