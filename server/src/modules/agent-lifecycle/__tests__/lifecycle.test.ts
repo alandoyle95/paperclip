@@ -183,6 +183,16 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await db.select().from(approvals).where(eq(approvals.companyId, companyId))).toHaveLength(0);
     const saved = await request(app(board)).patch(`/api/agents/${setupId}`).send({ adapterConfig: { command: "draft-command", env: { SETUP_LABEL: { type: "plain", value: "saved-value" } } } });
     expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    const probe = vi.spyOn(requireServerAdapter("process"), "testEnvironment").mockResolvedValue({ adapterType: "process", status: "pass", checks: [], testedAt: new Date().toISOString() });
+    try {
+      const probeBody = { agentId: setupId, adapterConfig: saved.body.adapterConfig };
+      const testUrl = `/api/companies/${companyId}/adapters/process/test-environment`;
+      const tested = await request(app(board)).post(testUrl).send(probeBody);
+      expect(tested.status, JSON.stringify(tested.body)).toBe(200);
+      expect(probe).toHaveBeenCalledWith(expect.objectContaining({ config: expect.objectContaining({ env: { SETUP_LABEL: "saved-value" } }) }));
+      await request(app({ ...board, userId: "other-creator" })).post(testUrl).send(probeBody).expect(403);
+      expect(probe).toHaveBeenCalledTimes(1);
+    } finally { probe.mockRestore(); }
     await request(app({ ...board, userId: "other-creator" })).patch(`/api/agents/${setupId}`).send({ adapterConfig: { command: "foreign-command" } }).expect(403);
     const denied = await request(app({ ...board, companyIds: [], memberships: [] })).post(url).send({ ...body, setupId: randomUUID() });
     expect([403, 404]).toContain(denied.status);
@@ -217,6 +227,32 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(approvedRetry.status).toBe(200);
     expect(approvedRetry.body.approval.status).toBe("approved");
     expect(await db.select().from(approvals).where(eq(approvals.companyId, companyId))).toHaveLength(1);
+  });
+
+  it("restores hidden setup values when a native Codex record uses the Codex onboarding choice", async () => {
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "board", membershipRole: "owner" });
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "board", companyIds: [companyId] }; next(); });
+    app.use("/api", agentRoutes(db)); app.use(errorHandler);
+    const setupId = randomUUID();
+    const created = await request(app).post(`/api/companies/${companyId}/agents`).send({ setupId, name: "Native saved setup",
+      adapterType: "paperclip_runner", adapterConfig: { provider: "codex", env: { SETUP_LABEL: { type: "plain", value: "saved-native-value" } } },
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(created.body.adapterConfig.env.SETUP_LABEL).toEqual({ type: "plain", value: "***REDACTED***" });
+    const probe = vi.spyOn(requireServerAdapter("paperclip_runner"), "testEnvironment").mockResolvedValue({ adapterType: "paperclip_runner", status: "pass", checks: [], testedAt: new Date().toISOString() });
+    try {
+      const tested = await request(app).post(`/api/companies/${companyId}/adapters/codex_local/test-environment`).send({
+        agentId: setupId, runner: "paperclip", adapterConfig: created.body.adapterConfig,
+      });
+      expect(tested.status, JSON.stringify(tested.body)).toBe(200);
+      expect(probe).toHaveBeenCalledWith(expect.objectContaining({ config: expect.objectContaining({ env: { SETUP_LABEL: "saved-native-value" } }) }));
+    } finally { probe.mockRestore(); }
+    const finished = await request(app).post(`/api/companies/${companyId}/agent-hires`).send({ setupAgentId: setupId, name: "Native saved setup",
+      adapterType: "codex_local", runner: "paperclip", adapterConfig: created.body.adapterConfig,
+    });
+    expect(finished.status, JSON.stringify(finished.body)).toBe(201);
+    expect((await current(setupId)).adapterConfig.env).toEqual({ SETUP_LABEL: { type: "plain", value: "saved-native-value" } });
   });
 
   it("holds an incomplete Copilot setup but still requires a model at final hire", async () => {

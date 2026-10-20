@@ -3180,8 +3180,9 @@ export function agentRoutes(
       if (savedAgentId) {
         if (!savedAgent) return;
         if (savedAgent.companyId !== companyId) throw notFound("Agent not found");
-        await assertCanUpdateAgent(req, savedAgent);
+        await assertCanConfigureAgentSetup(req, savedAgent);
       }
+      const testingSetup = savedAgent?.lifecycleState === "paused" && savedAgent.pauseReason === "setup";
       const poolBinding = requestedBinding ?? (savedAgent?.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(savedAgent.runtimeConfig.aiConnection) : undefined);
       const requestedEnvironmentId = await resolveAdapterTestEnvironmentId(
         companyId,
@@ -3203,14 +3204,7 @@ export function agentRoutes(
       // the probe treats "***REDACTED***" as a value to persist.
       let adapterConfigForTest = inputAdapterConfig;
       if (savedAgent) {
-        const providerAdapter = savedAgent.adapterType === "paperclip_runner"
-          ? inputAdapterConfig.provider === "codex"
-            ? "codex_local"
-            : inputAdapterConfig.provider === "acpx" && inputAdapterConfig.acpxAgent === "claude"
-              ? "claude_local"
-              : null
-          : null;
-        const canRestoreEnv = savedAgent.adapterType === type || providerAdapter === type;
+        const canRestoreEnv = agentHarnessType(savedAgent.adapterType, savedAgent.adapterConfig) === agentHarnessType(type, inputAdapterConfig);
         // Permit testing a prospective adapter switch, but do not transfer
         // hidden values from the saved adapter into an unrelated harness.
         if (!canRestoreEnv && Object.values(parseObject(inputAdapterConfig.env)).some(value => {
@@ -3238,7 +3232,7 @@ export function agentRoutes(
       const adapter = requireServerAdapter(type);
       if (!retainsSavedExecution) await assertSelectableAdapterType(type, adapterConfigForTest);
       if (poolBinding?.mode === "router") {
-        await validateManagedAgentBinding(req, companyId, savedAgentId ?? "", type, adapterConfigForTest, poolBinding, requestedEnvironmentId, false, !savedAgentId);
+        await validateManagedAgentBinding(req, companyId, savedAgentId ?? "", type, adapterConfigForTest, poolBinding, requestedEnvironmentId, false, !savedAgentId || testingSetup);
         res.json({ adapterType: type, status: "warn", testedAt: new Date().toISOString(), checks: [{ code: "ai_connection_pool_task_test_required", level: "warn", message: "Pool configuration is available. Run a task to verify the selected account and harness; this preview does not allocate a task or contact a provider." }] });
         return;
       }
@@ -3387,7 +3381,7 @@ export function agentRoutes(
             effectiveAdapterConfig.apiKey = req.body.testCredentials.API_SERVER_KEY;
           }
         }
-        const result = aiBinding ? await withManagedAiProbe(db, { companyId, agentId: req.body.agentId ?? "", responsibleUserId: responsibleUserForAiRequest(req), adapterType: type, binding: aiBinding, config: effectiveAdapterConfig, allowUninstalledPersonal: !req.body.agentId, allowUninstalledShared: !req.body.agentId && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, aiBinding) }, async managed => {
+        const result = aiBinding ? await withManagedAiProbe(db, { companyId, agentId: req.body.agentId ?? "", responsibleUserId: responsibleUserForAiRequest(req), adapterType: type, binding: aiBinding, config: effectiveAdapterConfig, allowUninstalledPersonal: !savedAgentId || testingSetup, allowUninstalledShared: (!savedAgentId || testingSetup) && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, aiBinding) }, async managed => {
           const managedAiCredentialHome = type === "paperclip_runner" && asRecord(managed.config)?.provider === "codex" && managed.home
             ? path.join(managed.home, "provider") : undefined;
           const tested = await testManagedEnvironment(type, { companyId, adapterType: type, config: managed.config, managedAiCredentialHome, executionTarget, environmentName }, aiBinding, managed, savedAgentId ?? undefined);
@@ -4343,7 +4337,8 @@ export function agentRoutes(
         res.status(200).json({ agent: redactAgentRowForResponse(setupAgent), approval, idempotent: true });
         return;
       }
-      if (hireInput.adapterConfig && hireInput.adapterType === setupAgent.adapterType) {
+      if (hireInput.adapterConfig && agentHarnessType(hireInput.adapterType ?? "process", hireInput.adapterConfig)
+        === agentHarnessType(setupAgent.adapterType, setupAgent.adapterConfig)) {
         hireInput.adapterConfig = restoreRedactedAgentEnv(hireInput.adapterConfig, setupAgent.adapterConfig);
       }
     }
@@ -5507,7 +5502,8 @@ export function agentRoutes(
       });
     }
     const nextAiConfig = (patchData.adapterConfig ?? existing.adapterConfig) as Record<string, unknown>;
-    if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection) {
+    if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection
+      && !(existing.lifecycleState === "paused" && existing.pauseReason === "setup")) {
       const existingBinding = aiRuntimeConnectionBindingSchema.safeParse(existing.runtimeConfig.aiConnection).data;
       if (existingBinding && agentHarnessType(existing.adapterType, existing.adapterConfig) === agentHarnessType(requestedAdapterType, nextAiConfig)
         && (existingBinding.mode === "router" || isAiConnectionCompatible(existingBinding,

@@ -103,7 +103,7 @@ import { isVisualAdapterChoice } from "../adapters/metadata";
 import { useDisabledAdaptersSync, useAdapterRegistryLoaded } from "../adapters/use-disabled-adapters";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { getAdapterDisplay } from "../adapters/adapter-display-registry";
-import { buildFixedClaudeOAuthBinding } from "./environment-variables-editor/model";
+import { buildFixedClaudeOAuthBinding, CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./environment-variables-editor/model";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { restoreOnboardingState } from "../lib/onboarding-state";
 import {
@@ -1286,6 +1286,9 @@ function OnboardingWizardInner({
    * Anything that gates this step belongs in here, so the next one is added
    * once rather than twice.
    */
+  const restoredApiCredential = restoredSetup?.companyId === createdCompanyId
+    && agentHarnessType(restoredSetup.adapterType, restoredSetup.adapterConfig) === agentHarnessType(adapterType, isCopilot ? { provider: "acpx", acpxAgent: "copilot" } : {})
+    && !selectedSavedKey && (restoredSetup.adapterConfig.env as Record<string, unknown> | undefined)?.[apiKeyEnvKeyFor(adapterType)];
   const connectStepReady = Boolean(setupPrepared || createdAgentId) && sourceSelected && !adapterEnvLoading && !savedKeys.loading && runnerDiscoveryReady && (!isCopilot || copilotModelReady);
 
   useEffect(() => {
@@ -1319,7 +1322,7 @@ function OnboardingWizardInner({
           setAgentRole(agent.role);
           setAgentAppearance(resolveAgentAppearance(agent.appearance, agent.id));
           const config = agent.adapterConfig;
-          setAdapterType(agentHarnessType(agent.adapterType, config) === "copilot_runtime" ? "paperclip_runner" : agentHarnessType(agent.adapterType, config) as AdapterType);
+          setAdapterType(agentHarnessType(agent.adapterType, config) === "acpx:copilot" ? "paperclip_runner" : agentHarnessType(agent.adapterType, config) as AdapterType);
           setModel(typeof config.model === "string" ? config.model : "");
           setCommand(typeof config.command === "string" ? config.command : "");
           setArgs(Array.isArray(config.args) ? config.args.join(" ") : "");
@@ -1328,6 +1331,8 @@ function OnboardingWizardInner({
           const binding = agent.runtimeConfig?.aiConnection as AiConnectionBinding | undefined;
           if (binding) setCredentialMode(binding.method === "api_key" ? "api" : "subscription");
           else if ((config.env as Record<string, unknown> | undefined)?.[apiKeyEnvKeyFor(adapterType)]) setCredentialMode("api");
+          else if ((config.env as Record<string, unknown> | undefined)?.[CLAUDE_OAUTH_TOKEN_ENV_KEY]
+            || (config.env as Record<string, unknown> | undefined)?.CODEX_HOME) setCredentialMode("subscription");
           if (config.provider === "acpx" && config.acpxAgent === "copilot") setCopilotConnection(binding);
         }
       } else setCreatedAgentId(agent.id);
@@ -1552,7 +1557,7 @@ function OnboardingWizardInner({
                 label: "Connect",
                 icon: "arrow",
                 disabled:
-                  !connectStepReady || (!isCopilot && credentialMode === "api" && !apiKey.trim() && !selectedApiKey),
+                  !connectStepReady || (!isCopilot && credentialMode === "api" && !apiKey.trim() && !selectedApiKey && !restoredApiCredential && !managedBindingForStep()),
               }
           : // Nothing is chosen on arrival, and the row is what chooses. Until
             // it has been answered the button has nothing to do.
@@ -2024,8 +2029,16 @@ function OnboardingWizardInner({
           ? runner === "legacy" && DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX
           : defaultCreateValues.dangerouslyBypassSandbox
     });
+    const savedEnv = { ...((savedConfig.env as Record<string, unknown>) ?? {}) };
+    if (adapterType === "claude_local") {
+      if (credentialMode === "api" || managedBindingForStep()) delete savedEnv[CLAUDE_OAUTH_TOKEN_ENV_KEY];
+      if (credentialMode === "subscription" || managedBindingForStep()) {
+        delete savedEnv.ANTHROPIC_API_KEY;
+        delete savedEnv.ANTHROPIC_AUTH_TOKEN;
+      }
+    }
     const config = { ...savedConfig, ...builtConfig,
-      ...((savedConfig.env || builtConfig.env) ? { env: { ...((savedConfig.env as object) ?? {}), ...((builtConfig.env as object) ?? {}) } } : {}) };
+      ...((savedConfig.env || builtConfig.env) ? { env: { ...savedEnv, ...((builtConfig.env as object) ?? {}) } } : {}) };
     if (adapterType === "claude_local" && forceUnsetAnthropicApiKey) {
       const env =
         typeof config.env === "object" &&
@@ -2218,6 +2231,7 @@ function OnboardingWizardInner({
         adapterType,
         {
           adapterConfig: testedConfig,
+          ...(restoredSetup?.companyId === createdCompanyId ? { agentId: restoredSetup.id } : {}),
           ...(["codex_local", "claude_local"].includes(adapterType) && runner !== "auto" ? { runner } : {}),
           ...(managedBindingForStep() ? { aiConnection: managedBindingForStep() } : {}),
           environmentId,

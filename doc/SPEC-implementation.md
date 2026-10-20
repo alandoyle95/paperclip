@@ -1328,7 +1328,11 @@ they cannot replace the submitted configuration. Both setup entry points save
 configuration on the record so the roster can reopen it with the same runner.
 Resuming setup loads the server configuration before autosaving local edits.
 Its saved environment is used for login, connection verification, and final hire.
-Changing harnesses drops incompatible saved AI connections.
+Changing harnesses drops incompatible saved AI connections. Setup runtime updates
+carry the current connection choice rather than retaining a superseded binding.
+Connection tests use the setup ID to restore redacted environment values under
+the setup creator's permissions; shared connections are installed only at hire.
+Changing Claude authentication modes removes the previous mode's credentials.
 Held setup records may omit provider details such as the Copilot model; final
 hire still requires a complete provider configuration. Kimi API model, protocol,
 and endpoint choices are also stored as nonsecret `adapterConfig.kimiApi` settings

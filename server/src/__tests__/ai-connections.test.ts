@@ -2189,11 +2189,18 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const initial = await request(app).post(`/api/companies/${companyId}/agents`).send({ setupId, name: "Shared setup agent", adapterType: "claude_local", runner: "legacy" });
     expect(initial.status, JSON.stringify(initial.body)).toBe(201);
     const probe = vi.spyOn(requireServerAdapter("claude_local"), "testEnvironment");
+    const providerRequest = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 200 }));
     try {
       const saved = await request(app).patch(`/api/agents/${setupId}`).send({ runtimeConfig: { aiConnection: selected } });
       expect(saved.status, JSON.stringify(saved.body)).toBe(200);
       expect(saved.body).toMatchObject({ pauseReason: "setup", runtimeConfig: { aiConnection: selected } });
       expect(probe).not.toHaveBeenCalled();
+      probe.mockResolvedValue({ adapterType: "claude_local", status: "pass", checks: [], testedAt: new Date().toISOString() });
+      const tested = await request(app).post(`/api/companies/${companyId}/adapters/claude_local/test-environment`).send({
+        agentId: setupId, runner: "legacy", adapterConfig: {}, aiConnection: selected,
+      });
+      expect(tested.status, JSON.stringify(tested.body)).toBe(200);
+      expect(probe).toHaveBeenCalledTimes(1);
       expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.targetId, setupId))).toHaveLength(0);
       const finished = await request(app).post(`/api/companies/${companyId}/agent-hires`).send({
         setupAgentId: setupId, name: "Shared setup agent", adapterType: "claude_local", runner: "legacy", runtimeConfig: { aiConnection: selected },
@@ -2201,16 +2208,16 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(finished.status, JSON.stringify(finished.body)).toBe(201);
       expect(finished.body.agent.id).toBe(setupId);
       expect(await db.select().from(toolConnectionInstalls).where(and(eq(toolConnectionInstalls.connectionId, account.connectionId), eq(toolConnectionInstalls.targetId, setupId)))).toHaveLength(1);
-    } finally { probe.mockRestore(); }
+    } finally { probe.mockRestore(); providerRequest.mockRestore(); }
   });
 
-  it.each(["responsible_user", "shared"] as const)("drops an incompatible saved %s connection when setup changes providers", async mode => {
+  it.each([["responsible_user", "codex_local"], ["shared", "codex_local"], ["responsible_user", "claude_local"]] as const)("drops a superseded saved %s connection when %s setup changes authentication", async (mode, adapterType) => {
     const setupId = randomUUID();
     await db.insert(agents).values({ id: setupId, companyId, name: "Switch provider", createdByUserId: "alice",
-      adapterType: "codex_local", status: "paused", lifecycleState: "paused", pauseReason: "setup", lifecycleHolds: ["setup"],
+      adapterType, status: "paused", lifecycleState: "paused", pauseReason: "setup", lifecycleHolds: ["setup"],
       runtimeConfig: { aiConnection: mode === "shared"
         ? { provider: "openai", method: "api_key", mode, connectionId: randomUUID(), grantId: randomUUID() }
-        : { provider: "openai", method: "subscription", mode } },
+        : { provider: adapterType === "claude_local" ? "anthropic" : "openai", method: "subscription", mode } },
     });
     const app = express(); app.use(express.json());
     app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "alice", companyIds: [companyId] }; next(); });
