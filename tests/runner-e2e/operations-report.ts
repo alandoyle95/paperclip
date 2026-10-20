@@ -3,9 +3,10 @@ import { usdToUnits } from "../../packages/shared/src/money.js";
 import { html } from "./report-format.js";
 
 const money = (n: bigint) => `${n / 1_000_000_000n}.${String(n % 1_000_000_000n).padStart(9, "0")}`;
-export interface EvalOperationsReport {
+interface EvalOperationsAvailableReport {
   version: 1;
   scope: "shared_gateway_ledger";
+  status?: never;
   ledgerCampaignId: string;
   journalHash: string;
   records: number;
@@ -21,12 +22,20 @@ export interface EvalOperationsReport {
   breakdown: { reported: string; estimated: string; allocated: string; reconciled: string };
   attempts: Array<{ executionId: string; attemptId: string; requests: number; unresolvedRequests: number; knownUsd: string; heldUsd: string }>;
 }
+export type EvalOperationsReport = EvalOperationsAvailableReport | {
+  version: 1; scope: "shared_gateway_ledger"; status: "unavailable";
+};
 
 export function validateEvalOperationsReport(report: EvalOperationsReport): void {
   const fail = (): never => { throw new Error("Invalid retained eval operations report"); };
   const fields = (value: unknown, allowed: string[]) => {
     if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !allowed.includes(key))) fail();
   };
+  if (report?.status === "unavailable") {
+    fields(report, ["version", "scope", "status"]);
+    if (report.version !== 1 || report.scope !== "shared_gateway_ledger") fail();
+    return;
+  }
   const dollars = (value: unknown): bigint => typeof value === "string" && /^(?:0|[1-9][0-9]*)\.[0-9]{9}$/.test(value) ? usdToUnits(value) : fail();
   const count = (value: unknown) => { if (!Number.isSafeInteger(value) || Number(value) < 0) fail(); };
   fields(report, ["version", "scope", "ledgerCampaignId", "journalHash", "records", "deadlineAt", "limitUsd", "knownUsd", "heldUsd", "committedUsd", "requests", "unresolvedRequests", "conflictingRequests", "inflight", "breakdown", "attempts"]);
@@ -54,8 +63,13 @@ export function validateEvalOperationsReport(report: EvalOperationsReport): void
 }
 
 export async function readEvalOperationsReport(file: string): Promise<EvalOperationsReport> {
+  try { return await readAvailableEvalOperationsReport(file); }
+  catch { return { version: 1, scope: "shared_gateway_ledger", status: "unavailable" }; }
+}
+
+async function readAvailableEvalOperationsReport(file: string): Promise<EvalOperationsAvailableReport> {
   const loaded = await readEvalCostLedger(file), snapshot = loaded.state.snapshot();
-  const groups = new Map<string, EvalOperationsReport["attempts"][number]>();
+  const groups = new Map<string, EvalOperationsAvailableReport["attempts"][number]>();
   for (const request of snapshot.requests) {
     const key = JSON.stringify([request.executionId, request.attemptId]);
     const group = groups.get(key) ?? { executionId: request.executionId, attemptId: request.attemptId,
@@ -71,10 +85,14 @@ export async function readEvalOperationsReport(file: string): Promise<EvalOperat
     journalHash: loaded.previous, records: loaded.sequence, deadlineAt: loaded.state.limits.deadlineAt,
     limitUsd: snapshot.limitUsd, knownUsd: snapshot.knownUsd, heldUsd: snapshot.heldUsd, committedUsd: snapshot.committedUsd,
     requests: snapshot.requests.length, unresolvedRequests: snapshot.unknownRequests, conflictingRequests: snapshot.conflictingRequests,
-    inflight: snapshot.inflight, breakdown: snapshot.breakdown as EvalOperationsReport["breakdown"], attempts: [...groups.values()] };
+    inflight: snapshot.inflight, breakdown: snapshot.breakdown as EvalOperationsAvailableReport["breakdown"], attempts: [...groups.values()] };
 }
 
 export function operationsReportText(report: EvalOperationsReport): string[] {
+  if (report.status === "unavailable") return [
+    "Request ledger accounting unavailable: the journal could not be read or validated. Request amounts, counts, and held reservations are unknown.",
+    "Retained test results are preserved. Recover and validate the original journal before resuming paid work; do not reset the allowance or treat missing amounts as zero.",
+  ];
   return [
     `Shared request ledger ${report.ledgerCampaignId}: $${report.knownUsd} known subtotal; $${report.heldUsd} additional held reservations; $${report.committedUsd} committed against $${report.limitUsd}.`,
     `Charges: $${report.breakdown.reconciled} reconciled; $${report.breakdown.reported} reported; $${report.breakdown.estimated} estimated; $${report.breakdown.allocated} allocated.`,
@@ -86,6 +104,7 @@ export function operationsReportText(report: EvalOperationsReport): string[] {
 
 export function renderEvalOperationsReport(report: EvalOperationsReport): string {
   validateEvalOperationsReport(report);
+  if (report.status === "unavailable") return `<section aria-label="Request ledger accounting"><h2>Request ledger accounting unavailable</h2>${operationsReportText(report).map(line => `<p>${html(line)}</p>`).join("")}</section>`;
   return `<section aria-label="Request ledger accounting"><h2>Request ledger accounting</h2>${operationsReportText(report).map(line => `<p>${html(line)}</p>`).join("")}
     <table><thead><tr><th>Execution</th><th>Attempt</th><th>Requests</th><th>Known subtotal</th><th>Additional held</th><th>Unresolved</th></tr></thead><tbody>
     ${report.attempts.map(attempt => `<tr><td>${html(attempt.executionId)}</td><td>${html(attempt.attemptId)}</td><td>${attempt.requests}</td><td>$${html(attempt.knownUsd)}</td><td>$${html(attempt.heldUsd)}</td><td>${attempt.unresolvedRequests}</td></tr>`).join("")}

@@ -113,6 +113,10 @@ Gateway and native tracing are separate opt-ins; see the README tracing section.
   unresolved requests and per-attempt totals. It can include earlier campaigns
   sharing that budget. It is a separate view of model spending: do not add it to
   heartbeat totals. The journal hash and record count identify the checkpoint.
+- If the journal cannot be read or validated, the report records accounting as
+  unavailable with no numeric totals. Retained results and reports are still
+  written, and the launcher/report command exits unsuccessfully. Recover the
+  original journal before resuming paid work; reporting does not repair or reset it.
 - To regenerate a merged report with the same ledger, pass
   `PAPERCLIP_E2E_OPERATIONS_LEDGER=/absolute/ledger.jsonl` to `report.ts`.
   Dashboard refresh and public publication preserve and validate its closed

@@ -416,7 +416,7 @@ async function main() {
   const junit = `<?xml version="1.0" encoding="UTF-8"?><testsuite name="Runner Full-Stack E2E" tests="${selected.length}" failures="${failures}">${cases}</testsuite>\n`;
   await writeFile(path.join(output, "junit.xml"), junit);
   console.log(summaryLines.join("\n"));
-  if (failures > 0) process.exitCode = 1;
+  if (failures > 0 || campaign.operations?.status === "unavailable") process.exitCode = 1;
 }
 
 await main().catch((error) => {

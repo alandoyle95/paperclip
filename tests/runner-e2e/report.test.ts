@@ -19,6 +19,37 @@ afterEach(async () => {
 });
 
 describe("runner E2E report aggregation", () => {
+  it("publishes retained passing results but exits unsuccessfully when the request journal is damaged", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-damaged-ledger-report-"));
+    cleanupDirectories.push(root);
+    const executionId = "core-compatibility.runner-codex.local.message-marker";
+    const directory = path.join(root, "attempt-1");
+    await mkdir(directory);
+    const result: RunnerE2EResult = {
+      schema: "paperclip.runner-e2e.result/v2", executionId, suiteId: "core-compatibility",
+      attempt: 1, status: "passed", profileId: "runner-codex", environmentId: "local",
+      caseId: "message-marker", provider: "codex", model: "fixture-model", runtimeMode: "native",
+      startedAt: "2026-10-20T00:00:00Z", finishedAt: "2026-10-20T00:00:01Z", durationMs: 1000, cleanup: "passed",
+    };
+    const original = JSON.stringify(result);
+    await writeFile(path.join(directory, "result.json"), original);
+    await writeFile(path.join(directory, "final-state.png"), "fake-png");
+    await writeFile(path.join(directory, "evidence-manifest.json"), JSON.stringify({ files: ["final-state.png"], leaks: [], missing: [] }));
+    const journal = path.join(root, "journal.jsonl"), output = path.join(root, "merged");
+    await writeFile(journal, '{"damaged-journal":');
+    await expect(execFileAsync(process.execPath, [path.join(repositoryRoot, "cli/node_modules/tsx/dist/cli.mjs"), path.join(repositoryRoot, "tests/runner-e2e/report.ts")], {
+      cwd: repositoryRoot, env: { ...process.env, PAPERCLIP_RUNNER_E2E_REPORT_ROOT: root, PAPERCLIP_RUNNER_E2E_REPORT_OUT: output,
+        PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: JSON.stringify([executionId]), PAPERCLIP_E2E_OPERATIONS_LEDGER: journal },
+    })).rejects.toMatchObject({ code: 1 });
+    const normalized = JSON.parse(await readFile(path.join(output, "normalized-results.json"), "utf8"));
+    expect(normalized).toMatchObject({ passed: 1, failed: 0, operations: { status: "unavailable" } });
+    expect(normalized.results[0]).toMatchObject({ executionId, status: "passed" });
+    for (const file of ["index.html", "summary.md"]) {
+      expect(await readFile(path.join(output, file), "utf8")).toContain("Request ledger accounting unavailable");
+    }
+    expect(await readFile(path.join(directory, "result.json"), "utf8")).toBe(original);
+  });
+
   it("retains full reuse and a workspace-only invalidation in the generated report", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "runner-reuse-report-"));
     cleanupDirectories.push(root);

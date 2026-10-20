@@ -1125,13 +1125,15 @@ async function main() {
   }
 
   const generatedAt = new Date().toISOString();
+  const operationsReport = operations ? await readEvalOperationsReport(operations.manifest.ledgerPath) : undefined;
+  if (operationsReport?.status === "unavailable") campaignFailed = true;
   const campaign = buildRunnerCampaign({
     campaignId,
     generatedAt,
     expected: executions.map((execution) => execution.id),
     results: finalResults,
     attempts,
-    ...(operations ? { operations: await readEvalOperationsReport(operations.manifest.ledgerPath) } : {}),
+    ...(operationsReport ? { operations: operationsReport } : {}),
   });
   const campaignSecrets = normalizedSecrets(
     [...CREDENTIAL_NAMES, ...EVAL_OBSERVABILITY_SECRET_NAMES].map((name) => process.env[name]),
