@@ -2545,3 +2545,30 @@ considering the review complete; collection itself performs no model call or
 semantic triage. Historical artifacts without feedback fields are labeled as
 uncaptured. A killed worker that never reaches finalization is also uncaptured,
 not evidence of zero feedback.
+
+### Cost-ledger integration contract
+
+`cost-ledger.ts` provides the request-level journal used by the eval operations
+integration. It is a library; the existing launcher is not yet universally routed
+through it, and merely setting a campaign ID does not enforce a spending cap.
+Every paid dispatch must await a durable reservation before contacting a provider.
+The caller supplies an explicit campaign ceiling, deadline, request count, and
+concurrency. Monetary decisions use integer nanodollars. Model list prices remain
+estimates with a pinned version; they do not become provider invoices.
+
+The journal retains setup/agent/judge/tool/infrastructure attribution separately
+from heartbeat IDs. Multiple sources for the same request are retained but only
+one cost contributes to the total: reconciled, reported, estimated, then allocated.
+Missing receipts and cancellations retain their reservation. Contradictory final
+receipts stop new admissions. An observed overshoot is retained in full and stops
+further work; local estimated limits are not provider-enforced dollar limits.
+A request bound must account for input/context, output limits, cache-write pricing,
+and any paid tools before claiming a bounded overshoot.
+
+A single writer serializes admissions and fsyncs each journal record. Read-only
+inspection survives process loss; truncated/tampered records fail closed. A stale
+`.lock` requires inspection of the recorded owner PID before operator recovery;
+never remove a live writer's lock. Resuming a campaign cannot silently change its
+limits. The ledger rejects unreviewed fields and contains no prompts, responses,
+headers, or credentials. Cross-source request joins must use a verified request
+identity; ambiguous provider-request joins are rejected rather than double counted.
