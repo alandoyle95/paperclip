@@ -39,7 +39,7 @@ const targets = vi.hoisted(() => new Map<string, AdapterSandboxExecutionTarget>(
 vi.mock("./environment-execution-target.js", async importOriginal => {
   const actual = await importOriginal<typeof import("./environment-execution-target.js")>();
   return { ...actual, resolveEnvironmentExecutionTarget: async (input: Parameters<typeof actual.resolveEnvironmentExecutionTarget>[0]) =>
-    targets.get(input.leaseId) ?? actual.resolveEnvironmentExecutionTarget(input) };
+    (input.leaseId ? targets.get(input.leaseId) : undefined) ?? actual.resolveEnvironmentExecutionTarget(input) };
 });
 
 describe("automatic retained workspace recovery", () => {
