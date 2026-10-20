@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { once } from "node:events";
 import { usdToUnits } from "../../packages/shared/src/money.js";
 import { estimateProviderCost, ProviderUsageAccumulator, type EvalModelPrice, type ProviderUsageReceipt } from "./provider-usage.js";
-import type { EvalChargeIdentity, openEvalCostLedger } from "./cost-ledger.js";
+import { validEvalLedgerId, type EvalChargeIdentity, type openEvalCostLedger } from "./cost-ledger.js";
 
 type Ledger = Awaited<ReturnType<typeof openEvalCostLedger>>;
 export interface EvalGatewayRoute {
@@ -33,7 +33,7 @@ const row = (value: unknown): Record<string, unknown> => value && typeof value =
 /** Conservative list-price reservation; provider invoices can still differ. */
 export function evalRequestReservation(route: EvalGatewayRoute): string {
   if (![route.maximumInputTokens, route.maximumOutputTokens, route.timeoutMs].every(n => Number.isSafeInteger(n) && n > 0)
-      || route.timeoutMs > 300_000 || route.provider !== route.price.provider || !route.price.version || !route.price.model) throw new Error("Invalid eval gateway limits");
+      || route.timeoutMs > 300_000 || route.provider !== route.price.provider || !validEvalLedgerId(route.price.version) || !validEvalLedgerId(route.price.model)) throw new Error("Invalid eval gateway limits or price identity");
   const parse = (rate: string) => {
     if (!/^(?:0|[1-9][0-9]*)(?:\.[0-9]{1,9})?$/.test(rate)) throw new Error("Invalid eval gateway price");
     return usdToUnits(rate);
@@ -176,14 +176,22 @@ export async function forwardEvalRequest(input: {
     receipt.usageComplete = observed.complete;
     receipt.final = observed.final;
     receipt.costUsd = estimateProviderCost(observed, route.price);
+    const tokens = { ...observed.tokens };
+    if (tokens.reasoning !== undefined && tokens.output !== undefined && tokens.reasoning > tokens.output) {
+      delete tokens.reasoning;
+      receipt.errorCode ??= "invalid_usage";
+    }
+    // Preserve the diagnostic provider receipt before settlement too. Invalid
+    // counters/IDs remain inspectable here but cannot corrupt the strict ledger.
+    await input.persist(receipt);
     // A transport-complete body with no priceable usage remains unknown, not free.
     await ledger.observe({ observationId: `${requestId}:usage`, requestId, source: route.mode === "braintrust" ? "gateway" : "provider",
-      provider: route.provider, model: observed.model ?? route.price.model,
-      ...(receipt.providerRequestId ? { providerRequestId: receipt.providerRequestId } : {}),
+      provider: route.provider,
+      ...(validEvalLedgerId(observed.model) ? { model: observed.model } : {}),
+      ...(validEvalLedgerId(receipt.providerRequestId) ? { providerRequestId: receipt.providerRequestId } : {}),
       currency: "USD", route: route.mode, classification: receipt.costUsd === null ? "unknown" : "estimated",
-      ...(receipt.costUsd !== null ? { costUsd: receipt.costUsd, pricingVersion: route.price.version } : {}), tokens: observed.tokens, final: observed.final });
+      ...(receipt.costUsd !== null ? { costUsd: receipt.costUsd, pricingVersion: route.price.version } : {}), tokens, final: observed.final });
     await ledger.finish(requestId, receipt.outcome);
-    await input.persist(receipt);
   }
   return receipt;
 }

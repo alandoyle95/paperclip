@@ -121,3 +121,30 @@ it("does not release a reservation for an otherwise final response missing cache
   expect(receipt).toMatchObject({ outcome: "succeeded", usageComplete: false, final: true, costUsd: null });
   expect(f.ledger.snapshot()).toMatchObject({ heldUsd: "0.003000000", unknownRequests: 1 });
 });
+it.each([{ version: "prices with spaces" }, { model: "model with spaces" }])("rejects invalid ledger price identities before reserving or dispatching", async invalid => {
+  const f = await fixture(), transport = vi.fn<typeof fetch>();
+  const price = { ...route.price, ...invalid };
+  await expect(forwardEvalRequest({ ...f, route: { ...route, price }, payload: { model: price.model }, transport })).rejects.toThrow("price identity");
+  expect(transport).not.toHaveBeenCalled();
+  expect(f.ledger.snapshot().requests).toHaveLength(0);
+});
+it("retains invalid reasoning counters privately and finishes an unknown charge", async () => {
+  const f = await fixture(), body = structuredClone(usage);
+  body.usage.output_tokens_details.reasoning_tokens = 6;
+  const receipt = await forwardEvalRequest({ ...f, transport: async () => Response.json(body, { headers: { "x-bt-used-endpoint": "OPENAI_API_KEY" } }) });
+  expect(receipt).toMatchObject({ outcome: "succeeded", errorCode: "invalid_usage", usageComplete: false, final: true, costUsd: null,
+    usage: { tokens: { output: 5, reasoning: 6 } } });
+  expect(f.receipts.at(-1)).toEqual(receipt);
+  expect(f.ledger.snapshot()).toMatchObject({ heldUsd: "0.003000000", unknownRequests: 1, inflight: 0 });
+  const journal = await readFile(f.file, "utf8");
+  expect(journal).not.toContain('"reasoning":6');
+  expect(journal).toContain('"type":"finish"');
+});
+it("retains malformed provider identifiers without losing the final receipt or ledger finish", async () => {
+  const f = await fixture();
+  const receipt = await forwardEvalRequest({ ...f, transport: async () => Response.json({ ...usage, model: "unexpected model name" },
+    { headers: { "x-bt-used-endpoint": "OPENAI_API_KEY", "x-request-id": "request with spaces" } }) });
+  expect(receipt).toMatchObject({ providerRequestId: "request with spaces", usage: { model: "unexpected model name" }, final: true, costUsd: null });
+  expect(f.receipts.at(-1)).toEqual(receipt);
+  expect(f.ledger.snapshot()).toMatchObject({ heldUsd: "0.003000000", unknownRequests: 1, inflight: 0 });
+});

@@ -43,7 +43,8 @@ type Event =
 interface Line { seq: number; at: string; previous: string; event: Event; hash: string }
 interface RequestState { identity: EvalChargeIdentity; reserved: bigint; observations: EvalCostObservation[]; finished: boolean }
 const usd = (units: bigint) => `${units / 1_000_000_000n}.${String(units % 1_000_000_000n).padStart(9, "0")}`;
-const validId = (value: unknown) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,511}$/.test(value);
+export const validEvalLedgerId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,511}$/.test(value);
+const validId = validEvalLedgerId;
 const amount = (value: string) => {
   // Refuse sub-nanodollar precision rather than silently rounding a cap upward.
   if (!/^(?:0|[1-9][0-9]*)(?:\.[0-9]{1,9})?$/.test(value)) throw new Error("Invalid ledger USD amount");
