@@ -71,10 +71,12 @@ export class EvalSpendState {
     // A matching request observed by multiple systems is counted once. Same-rank
     // disagreements remain unresolved; arrival order cannot decide a charge.
     const priced = request.observations.filter(value => value.costUsd !== undefined);
-    const finalized = priced.filter(value => value.final);
-    const candidates = finalized.length ? finalized : priced;
-    const bestRank = Math.max(-1, ...candidates.map(value => ranks[value.classification]));
-    const best = candidates.filter(value => ranks[value.classification] === bestRank);
+    // A terminal estimate cannot erase a stronger but still-partial provider
+    // receipt. Keep its reservation until that authoritative source is final.
+    const bestRank = Math.max(-1, ...priced.map(value => ranks[value.classification]));
+    const strongest = priced.filter(value => ranks[value.classification] === bestRank);
+    const finalized = strongest.filter(value => value.final);
+    const best = finalized.length ? finalized : strongest;
     if (!best.length) return { cost: null, classification: "unknown" as const, conflict: false, resolved: false };
     const amounts = new Set(best.map(value => amount(value.costUsd!).toString()));
     const cost = best.reduce((maximum, value) => amount(value.costUsd!) > maximum ? amount(value.costUsd!) : maximum, 0n);

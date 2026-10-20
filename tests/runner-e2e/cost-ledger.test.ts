@@ -136,3 +136,17 @@ it("rejects accidental raw payload fields and accepts equivalent receipt key ord
     expect(await readFile(file, "utf8")).not.toContain("private response");
   } finally { await ledger.close(); }
 });
+
+it("does not let a terminal estimate erase a stronger partial provider charge", async () => {
+  const { ledger } = await fixture();
+  try {
+    await ledger.reserve("request", identity, "0.8");
+    await ledger.observe(observation({ observationId: "provider-partial", final: false, costUsd: "0.6" }));
+    await ledger.observe(observation({ observationId: "gateway-final", source: "gateway", classification: "estimated", pricingVersion: "fixture", costUsd: "0.1" }));
+    await ledger.finish("request", "succeeded");
+    expect(ledger.snapshot()).toMatchObject({ knownUsd: "0.600000000", heldUsd: "0.200000000", unknownRequests: 1, breakdown: { reported: "0.600000000", estimated: "0.000000000" } });
+    await expect(ledger.reserve("next", identity, "0.3")).rejects.toThrow("spending cap");
+    await ledger.observe(observation({ observationId: "provider-final", costUsd: "0.65" }));
+    expect(ledger.snapshot()).toMatchObject({ knownUsd: "0.650000000", heldUsd: "0.000000000", unknownRequests: 0 });
+  } finally { await ledger.close(); }
+});
