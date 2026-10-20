@@ -16,12 +16,10 @@ export interface CampaignFeedbackReview {
     fingerprint: string;
     disposition: typeof dispositions[number];
     duplicateOf?: string;
-    /** Public paperclipai/paperclip issue. Private rationale stays outside reports. */
     issueNumber?: number;
   }>;
 }
 
-/** Bind review to retained attempts and coverage, not the report render time. */
 export function campaignFeedbackEvidence(campaign: RunnerE2ECampaign) {
   if (!campaign.accounting) throw new Error("Feedback review requires retained attempt accounting");
   const attempts = campaign.accounting.attempts.map(attempt => ({
