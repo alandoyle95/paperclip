@@ -1,0 +1,67 @@
+import { randomUUID } from "node:crypto";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { AdapterEnvironmentTestContext, AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
+import { resolvePaperclipRunnerPiThinkingLevel } from "@paperclipai/adapter-utils";
+import { environmentTaskResultSchema } from "@paperclipai/plugin-sdk";
+import { probeNativeRunnerEnvironment, resolveClaudeEffort } from "../../vendor/paperclip-runner/index.js";
+import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
+import { createPluginRunnerTaskOwner } from "./plugin-runner-task.js";
+import { resolvePaperclipRunnerProviderProfile } from "./provider-profile.js";
+import { resolveAcpxQualification } from "./acpx-qualification.js";
+
+/** Core verifies a real Runner; providers only implement their task API. */
+export async function probePluginRunnerEnvironment(context: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult> {
+  const testedAt = new Date().toISOString();
+  const target = context.executionTarget;
+  if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runnerTask || !target.runnerTaskProbe || !target.leaseId) {
+    throw new Error("Plugin Runner setup requires a Core-issued probe lease");
+  }
+  const task = target.runnerTask;
+  const binding = target.runnerTaskProbe;
+  const runnerId = `probe-${randomUUID()}`;
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "paperclip-runner-probe-")));
+  let cleanupConfirmed = false;
+  let probeStarted = false;
+  try {
+    const profile = resolvePaperclipRunnerProviderProfile(context.config);
+    if (profile.provider !== "codex" && profile.provider !== "opencode" && profile.provider !== "acpx") throw new Error("Plugin Runner setup requires a workspace harness");
+    const description = environmentTaskResultSchema.parse(await task({ kind: "describe" }));
+    if (description.kind !== "description" || description.launchPreparationVersion !== 1 || description.projectAuthCheckVersion !== 1) throw new Error("Plugin Runner launch preparation v1 unavailable");
+    const account = context.config.managedAiConnection as { identity?: string; sessionIdentity?: string } | undefined;
+    const environment = (context.config.env ?? {}) as NodeJS.ProcessEnv;
+    const credentials = await preparePluginRunnerCredentials({
+      provider: profile.provider === "acpx" ? profile.acpxAgent! : profile.provider,
+      identity: account?.identity, accountIdentity: account?.sessionIdentity,
+      home: environment.CODEX_HOME, environment,
+    });
+    const owner = createPluginRunnerTaskOwner({ ...credentials, projectAuthCheckVersion: description.projectAuthCheckVersion, task, projectIds: [],
+      harness: profile.provider === "acpx" ? profile.acpxAgent! : profile.provider,
+      credentialIdentity: (context.config.managedAiConnection as { identity?: string } | undefined)?.identity });
+    probeStarted = true;
+    const result = await probeNativeRunnerEnvironment({ runtimeDirectory: root, provider: profile.provider,
+      model: profile.model, workingDirectory: target.remoteCwd, timeoutMs: 45_000,
+      environment: {},
+      transportOptions: {
+        ...owner.driver, runnerArtifact: description.runner,
+        ...(profile.provider === "opencode" ? { opencodePermissionMode: "deny" } : {}),
+        ...(profile.provider === "acpx" ? { acpxAgent: profile.acpxAgent, acpxPermissionMode: "deny-all", acpxPermissionModePinned: true,
+          ...(profile.acpxAgent === "pi" ? { piThinkingLevel: resolvePaperclipRunnerPiThinkingLevel("acpx", "pi", context.config.piThinkingLevel) } : {}),
+          ...(profile.acpxAgent === "claude" ? { claudeEffort: resolveClaudeEffort("claude", context.config.modelReasoningEffort ?? context.config.reasoningEffort ?? context.config.effort) } : {}),
+          acpxCandidateProfile: profile.acpxAgent === "pi" ? undefined : resolveAcpxQualification({ kind: "acpx", agent: profile.acpxAgent, model: profile.model }, process.env) } : {}),
+        prpIdentity: { runnerInstanceId: runnerId, environmentLeaseId: target.leaseId, runId: binding.runId,
+          normalizedSessionId: binding.sessionId, turnId: `turn-${binding.runId}`, itemId: `item-${binding.runId}` },
+      },
+      onCleanupConfirmed: async () => { cleanupConfirmed = true; },
+    });
+    return { adapterType: "paperclip_runner", status: "pass", testedAt,
+      checks: [{ code: "runner_hello_probe_passed", level: "info", message: `Runner verified ${result.providerDriver} with model ${result.effectiveModel}.` }] };
+  } catch {
+    // Provider failures may contain credentials or private addressing.
+    return { adapterType: "paperclip_runner", status: "fail", testedAt,
+      checks: [{ code: "runner_hello_probe_failed", level: "error", message: "The selected plugin environment did not complete the Runner hello probe and confirmed cleanup. Check its runtime, account, and model access." }] };
+  } finally {
+    if (!probeStarted || cleanupConfirmed) rmSync(root, { recursive: true, force: true });
+  }
+}

@@ -87,9 +87,16 @@ vi.mock("./installation-integrity.js", () => ({ verifyNativeAcpxInstallation: vi
 
 describe("Copilot build-owned installation", () => {
   it("admits the current profile with environment launch preparation", () => {
-    expect(QUALIFIED_ACPX_PROFILES.copilot.agentProfileVersion).toBe(51);
+    expect(QUALIFIED_ACPX_PROFILES.copilot.agentProfileVersion).toBe(52);
     expect(QUALIFIED_ACPX_PROFILES.copilot.qualificationStatus).toBeUndefined();
-    expect(QUALIFIED_ACPX_PROFILES.copilot.commandDigest).toBe("sha256:8c1cddce201eb0e3f2792cc5a8c79edf36b0ce823e728255c1897f95c74a3866");
+    expect(QUALIFIED_ACPX_PROFILES.copilot.commandDigest).toBe("sha256:75c8a162fba32e2f7f5f4129a92063ecf67203883be9880b910f25c9d3af937b");
+  });
+
+  it("preserves v51 when the setup transport contract changes", () => {
+    const prior = JSON.parse(readFileSync(new URL("../../../test/fixtures/copilot-profile-v51-identity.json", import.meta.url), "utf8"));
+    expect(prior.commandDigest).toBe("sha256:8c1cddce201eb0e3f2792cc5a8c79edf36b0ce823e728255c1897f95c74a3866");
+    expect(isSupportedAcpxProfileVersion("copilot", 51)).toBe(true);
+    expect(QUALIFIED_ACPX_PROFILES.copilot.commandDigest).not.toBe(prior.commandDigest);
   });
 
   it("preserves v49 while binding the extracted provider launch builder", () => {
