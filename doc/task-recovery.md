@@ -18,6 +18,11 @@ Connected conversations use their existing inbound authorization owner. A board
 Retry changes the workspace strategy, not the external principal, source batch,
 conversation access or publication authority.
 
+Agent Chat additionally requires the current conversation owner and enabled
+Agent Chat. Admission and dispatch both recheck these conditions under the
+issue lock. An unadmitted receipt from a former owner cannot own the current
+owner's Retry.
+
 The normal dispatch queue rechecks task eligibility and claims saved input.
 An accepted native result goes back to its existing finalizer. Recovery does
 not create a second agent to reproduce that result.

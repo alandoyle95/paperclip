@@ -9509,6 +9509,11 @@ export function issueRoutes(
     if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
     const decision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    if (issue.conversationAgentId) {
+      if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
+      if (!req.actor.userId || req.actor.userId !== issue.conversationUserId)
+        throw forbidden("Only the conversation owner can retry a chat run");
+    }
     const { requestTaskRetry } = await import("../services/task-retry.js");
     const receipt = await requestTaskRetry({ db, companyId: issue.companyId, issueId: issue.id,
       ...req.body, actorId: getActorInfo(req).actorId, actorSource: req.actor.source,

@@ -1,19 +1,27 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issues, issueRecoveryActions } from "@paperclipai/db";
+import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issues, issueRecoveryActions, applyPendingMigrations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { requestTaskRetry } from "./task-retry.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
 import { settleUnrecoverableExecutions } from "./execution-recovery-resolution.js";
 import { createSystemRecovery, failSystemRecovery, readSystemRecovery, SystemRecoveryFailure } from "./system-recovery-state.js";
+import { instanceSettingsService } from "./instance-settings.js";
+import { heartbeatService } from "./heartbeat.js";
 
 describe("durable task Retry admission", () => {
   let postgres: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   beforeAll(async () => {
-    postgres = await startEmbeddedPostgresTestDatabase("task-retry-");
-    db = createDb(postgres.connectionString);
+    const externalUrl = process.env.PAPERCLIP_TASK_RETRY_TEST_DATABASE_URL;
+    if (externalUrl) {
+      await applyPendingMigrations(externalUrl);
+      db = createDb(externalUrl);
+    } else {
+      postgres = await startEmbeddedPostgresTestDatabase("task-retry-");
+      db = createDb(postgres.connectionString);
+    }
   }, 30_000);
   afterAll(async () => { await db?.$client.end(); await postgres?.cleanup(); });
   async function seed() {
@@ -47,6 +55,72 @@ describe("durable task Retry admission", () => {
     expect(await requestTaskRetry(input)).toMatchObject({ accepted: false, stale: true });
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, input.companyId))).toHaveLength(0);
   });
+  it("requires current Agent Chat ownership and enablement even when replaying a retry receipt", async () => {
+    const input = await seed();
+    const settings = instanceSettingsService(db);
+    await settings.updateExperimental({ enableAgentChat: true });
+    await db.update(issues).set({ conversationAgentId: (await db.select().from(issues).where(eq(issues.id, input.issueId)))[0].assigneeAgentId,
+      conversationUserId: input.actorId, conversationState: "waiting" }).where(eq(issues.id, input.issueId));
+    try {
+      await expect(requestTaskRetry({ ...input, actorId: "another-user" })).rejects.toMatchObject({ status: 403 });
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, input.companyId))).toHaveLength(0);
+      const accepted = await requestTaskRetry(input);
+      expect(accepted.accepted).toBe(true);
+      await settings.updateExperimental({ enableAgentChat: false });
+      await expect(requestTaskRetry(input)).rejects.toMatchObject({ status: 404 });
+      await settings.updateExperimental({ enableAgentChat: true });
+      await db.update(issues).set({ conversationUserId: "new-owner" }).where(eq(issues.id, input.issueId));
+      await expect(requestTaskRetry(input)).rejects.toMatchObject({ status: 403 });
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, input.companyId))).toHaveLength(1);
+      const next = await requestTaskRetry({ ...input, actorId: "new-owner", idempotencyKey: randomUUID() });
+      expect(next.requestId).not.toBe(accepted.requestId);
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, accepted.requestId!)))[0].status).toBe("failed");
+    } finally { await settings.updateExperimental({ enableAgentChat: false }); }
+  });
+  it.each(["owner", "feature"] as const)("rechecks Agent Chat $0 at dispatch after waiting for the issue lock", async gate => {
+    const input = { ...await seed(), actorId: "local-board", actorSource: "local_implicit" };
+    const settings = instanceSettingsService(db);
+    await settings.updateExperimental({ enableAgentChat: true, enableNativeRunner: true });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, input.issueId));
+    await db.update(issues).set({ conversationAgentId: issue.assigneeAgentId, conversationUserId: input.actorId,
+      conversationState: "waiting" }).where(eq(issues.id, input.issueId));
+    // Keep admitted runs queued: this test asserts admission, not provider behavior.
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } })
+      .where(eq(agents.id, issue.assigneeAgentId!));
+    await db.insert(heartbeatRuns).values({ companyId: input.companyId, agentId: issue.assigneeAgentId!, status: "running" });
+    const receipt = await requestTaskRetry(input);
+    let release!: () => void, ready!: () => void, holderPid = 0;
+    const held = new Promise<void>(resolve => { ready = resolve; });
+    const unlock = new Promise<void>(resolve => { release = resolve; });
+    const holder = db.transaction(async tx => {
+      holderPid = (await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`))[0].pid;
+      await tx.select().from(issues).where(eq(issues.id, issue.id)).for("update");
+      ready(); await unlock;
+      if (gate === "owner") await tx.update(issues).set({ conversationUserId: "new-owner" }).where(eq(issues.id, issue.id));
+      else await instanceSettingsService(tx as unknown as typeof db).updateExperimental({ enableAgentChat: false });
+    });
+    let dispatch: Promise<unknown> | undefined;
+    try {
+      await held;
+      dispatch = heartbeatService(db).resumeTaskRetry(input.companyId, receipt.requestId!).catch(error => error);
+      await expect.poll(async () => (await db.execute<{ waiting: boolean }>(sql`select exists(
+        select 1 from pg_stat_activity where datname = current_database()
+          and ${holderPid} = any(pg_blocking_pids(pid))) as waiting`))[0].waiting, { timeout: 5_000 }).toBe(true);
+      release(); await holder;
+      expect(await dispatch).toMatchObject({ status: gate === "owner" ? 403 : 404 });
+      expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.status, "queued")))).toHaveLength(0);
+      // Restore current authority; the same saved receipt can then admit one run.
+      await settings.updateExperimental({ enableAgentChat: true });
+      await db.update(issues).set({ conversationUserId: input.actorId }).where(eq(issues.id, issue.id));
+      await heartbeatService(db).resumeTaskRetry(input.companyId, receipt.requestId!);
+      expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.status, "queued")))).toHaveLength(1);
+    } finally {
+      release(); await Promise.allSettled([holder, dispatch]);
+      await settings.updateExperimental({ enableAgentChat: false, enableNativeRunner: false });
+    }
+  }, 30_000);
   it("replaces an exhausted unadmitted generation only on a new deliberate click", async () => {
     const input = await seed();
     const first = await requestTaskRetry(input);

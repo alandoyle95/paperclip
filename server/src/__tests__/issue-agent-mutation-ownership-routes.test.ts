@@ -165,9 +165,16 @@ const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null))
 const mockRetryWorkspaceExport = vi.hoisted(() => vi.fn());
 const mockRequestWorkspaceRecovery = vi.hoisted(() => vi.fn());
 const mockRequestTaskRetry = vi.hoisted(() => vi.fn());
+const mockGetExperimental = vi.hoisted(() => vi.fn());
 const mockResumeWorkspaceFinalization = vi.hoisted(() => vi.fn());
 
 function registerRouteMocks() {
+  vi.doMock("../services/instance-settings.js", async () => {
+    const actual = await vi.importActual<typeof import("../services/instance-settings.js")>("../services/instance-settings.js");
+    return { ...actual, instanceSettingsService: (...args: Parameters<typeof actual.instanceSettingsService>) => ({
+      ...actual.instanceSettingsService(...args), getExperimental: mockGetExperimental,
+    }) };
+  });
   vi.doMock("../services/task-retry.js", () => ({ requestTaskRetry: mockRequestTaskRetry }));
   vi.doMock("../services/task-interruption-presentation.js", () => ({
     taskInterruptionPresentation: vi.fn(async () => null),
@@ -261,6 +268,7 @@ function registerRouteMocks() {
     goalService: () => ({}),
     heartbeatService: () => mockHeartbeatService,
     instanceSettingsService: () => ({
+      getExperimental: mockGetExperimental,
       get: vi.fn(async () => ({
         id: "instance-settings-1",
         general: {
@@ -482,6 +490,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockChatRunRetries.prepareFailedChatRunRetry.mockReset();
     mockChatRunRetries.processFailedChatRunRetry.mockReset();
     mockRequestTaskRetry.mockReset().mockResolvedValue({ requestId: recoveryActionId, accepted: true, stale: false });
+    mockGetExperimental.mockReset().mockResolvedValue({ enableAgentChat: true });
     mockAccessService.canUser.mockReset();
     mockAccessService.decide.mockReset();
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
@@ -880,6 +889,22 @@ describe("agent issue mutation checkout ownership", () => {
     });
     expect(response.status).toBe(400);
     expect(mockRequestTaskRetry).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { owner: "another-user", enabled: true, status: 403 },
+    { owner: "board-user", enabled: false, status: 404 },
+    { owner: "board-user", enabled: true, status: 202 },
+  ])("gates Agent Chat task Retry by owner and feature ($owner, $enabled)", async ({ owner, enabled, status }) => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      conversationAgentId: ownerAgentId, conversationUserId: owner,
+    }));
+    mockGetExperimental.mockResolvedValue({ enableAgentChat: enabled });
+    const response = await request(createApp(boardActor())).post(`/api/issues/${issueId}/retry`).send({
+      idempotencyKey: recoveryActionId, observedRunId: ownerRunId,
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(status);
+    expect(mockRequestTaskRetry).toHaveBeenCalledTimes(status === 202 ? 1 : 0);
   });
 
   it.each([

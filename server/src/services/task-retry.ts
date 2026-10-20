@@ -2,10 +2,21 @@ import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, chatActions, chatConversations, chatEndpoints, heartbeatRuns, issues, issueRecoveryActions, type Db } from "@paperclipai/db";
-import { conflict, notFound } from "../errors.js";
+import { conflict, forbidden, notFound } from "../errors.js";
 import { persistActivity } from "./activity-log.js";
 import { createSystemRecovery, readSystemRecovery } from "./system-recovery-state.js";
 import { updateSystemRecovery } from "./system-recovery.js";
+import { instanceSettingsService } from "./instance-settings.js";
+
+export async function assertTaskRetryConversationAllowed(
+  db: Db,
+  issue: { conversationAgentId?: string | null; conversationUserId?: string | null },
+  actorId: string,
+) {
+  if (!issue.conversationAgentId) return;
+  if (!(await instanceSettingsService(db).getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
+  if (issue.conversationUserId !== actorId) throw forbidden("Only the conversation owner can retry a chat run");
+}
 
 const taskRetryIntentSchema = z.object({
   schema: z.literal("paperclip.task-retry.v1"), generationId: z.string().uuid(), sourceRunId: z.string().uuid(),
@@ -31,6 +42,7 @@ export async function requestTaskRetry(input: {
     const [issue] = await tx.select().from(issues).where(and(eq(issues.companyId, input.companyId),
       eq(issues.id, input.issueId))).for("update");
     if (!issue) throw notFound("Task not found");
+    await assertTaskRetryConversationAllowed(db, issue, input.actorId);
     const key = `task-retry:${input.idempotencyKey}`;
     const [sameRequest] = await tx.select().from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.idempotencyKey, key)));
@@ -55,6 +67,12 @@ export async function requestTaskRetry(input: {
       sql`${agentWakeupRequests.payload}->'taskRetry'->>'schema' = 'paperclip.task-retry.v1'`,
       inArray(agentWakeupRequests.status, ["deferred_issue_execution", "queued", "claimed"]),
     )).orderBy(desc(agentWakeupRequests.requestedAt)).limit(1)).at(0);
+    if (active && !active.runId && issue.conversationAgentId && active.requestedByActorId !== issue.conversationUserId) {
+      // A former owner's unadmitted receipt cannot own the new owner's Retry.
+      await tx.update(agentWakeupRequests).set({ status: "failed", finishedAt: new Date(), updatedAt: new Date() })
+        .where(eq(agentWakeupRequests.id, active.id));
+      active = undefined;
+    }
     const busy = ["queued", "running", "scheduled_retry"].includes(latest.status);
     const records = await tx.select().from(issueRecoveryActions).where(and(
       eq(issueRecoveryActions.companyId, issue.companyId), eq(issueRecoveryActions.sourceIssueId, issue.id),
