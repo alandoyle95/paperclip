@@ -204,7 +204,7 @@ describe("managed AI connections", () => {
       expect(response.status).toBe(200);
       expect(response.headers["cache-control"]).toBe("no-store");
       expect(response.body).toEqual([{ id: "gpt-5.6-luna", label: "GPT" }]);
-      expect(probe).toHaveBeenCalledWith(db, companyId, token, environment.id, undefined, { pluginWorkerManager });
+      expect(probe).toHaveBeenCalledWith(db, companyId, token, environment.id, undefined, { pluginWorkerManager, targetAgentId: agentId });
       expect(JSON.stringify(response.body)).not.toContain(token);
     } finally { probe.mockRestore(); }
   });

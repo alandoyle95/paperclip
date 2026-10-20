@@ -46,8 +46,10 @@ export async function probePluginRunnerEnvironment(context: AdapterEnvironmentTe
       harness: profile.provider === "acpx" ? profile.acpxAgent! : profile.provider,
       credentialIdentity: managed?.identity });
     probeStarted = true;
+    const effort = context.config.modelReasoningEffort ?? context.config.reasoningEffort ?? context.config.effort;
     const result = await probeNativeRunnerEnvironment({ runtimeDirectory: root, provider: profile.provider,
       model: profile.model, workingDirectory: target.remoteCwd, timeoutMs: 45_000,
+      ...(profile.provider === "codex" && typeof effort === "string" && effort ? { reasoningEffort: effort } : {}),
       environment: {},
       transportOptions: {
         ...owner.driver, runnerArtifact: description.runner,

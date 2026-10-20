@@ -41,17 +41,18 @@ describe("plugin Runner setup", () => {
       "-p", "paperclip-runner-core", "--bin", "paperclip-runnerd", "--bin", "fake-codex-app-server"], { stdio: "pipe" });
   }, 600_000);
   it.each([
-    { acpxAgent: "pi", model: "fixture-model", piThinkingLevel: "high", options: { piThinkingLevel: "high" } },
-    { acpxAgent: "claude", model: "claude-opus-5-5", effort: "high", options: { claudeEffort: "high" } },
-  ])("passes saved $acpxAgent settings to the setup transport", async ({ options, ...config }) => {
+    { config: { provider: "acpx", acpxAgent: "pi", model: "fixture-model", piThinkingLevel: "high" }, options: { transportOptions: { acpxAgent: "pi", piThinkingLevel: "high" } } },
+    { config: { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5", effort: "high" }, options: { transportOptions: { acpxAgent: "claude", claudeEffort: "high" } } },
+    { config: { provider: "codex", model: "gpt-6.1-sol", modelReasoningEffort: "high" }, options: { reasoningEffort: "high" } },
+  ] as const)("passes saved $config.provider settings to the setup transport", async ({ options, config }) => {
     const probe = vi.spyOn(runnerRuntime, "probeNativeRunnerEnvironment").mockImplementation(async input => {
-      expect(input.transportOptions).toMatchObject({ acpxAgent: config.acpxAgent, ...options });
+      expect(input).toMatchObject(options);
       await input.onCleanupConfirmed?.();
-      return { provider: "acpx", providerDriver: "acpx_runtime", effectiveModel: config.model, helloProbePassed: true };
+      return { provider: config.provider, providerDriver: config.provider === "codex" ? "codex_app_server" : "acpx_runtime", effectiveModel: config.model, helloProbePassed: true };
     });
     try {
       const result = await probePluginRunnerEnvironment({ companyId: "fixture-company", adapterType: "paperclip_runner",
-        config: { provider: "acpx", ...config },
+        config,
         executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: "probe-lease",
           runnerTaskProbe: { runId: "probe-run", sessionId: "probe-session" },
           runnerTask: async () => ({ kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, taskId: "probe-task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } }),
