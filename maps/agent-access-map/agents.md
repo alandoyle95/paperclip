@@ -48,6 +48,8 @@ The early wizard record (`setupId` on create) and completion of that record
 (`setupAgentId` on hire) require a board actor and company-scoped creation
 permission. Its creator can finish their own inactive setup with that permission;
 changing another person's setup requires configuration permission.
+Creation retries reuse only records owned by the caller. Returning a completed
+record also requires the normal agent-read and configuration-read checks.
 An unfinished record stays paused with a
 `setup` hold and cannot receive API keys or authenticate with keys or JWTs.
 Its standard grants apply at hire. Authorized completion retries recover the

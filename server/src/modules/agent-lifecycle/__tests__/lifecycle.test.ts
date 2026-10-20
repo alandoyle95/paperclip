@@ -171,6 +171,15 @@ const support = await getEmbeddedPostgresTestSupport();
     }
     expect(await db.select().from(agents).where(eq(agents.companyId, companyId))).toHaveLength(1);
     expect(await db.select().from(companyMemberships).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalType, "agent")))).toHaveLength(0);
+    await request(app({ ...board, userId: "other-creator" })).post(url).send(body).expect(404);
+    const other = await createAgentLifecycle(db).requestHire(companyId, {
+      name: "Other creator", adapterType: "process", status: "paused", adapterConfig: { command: "private-command" },
+      runtimeConfig: { privateSetting: "private-value" },
+    }, { createdByUserId: "other-creator" });
+    const configProbe = await request(app(board)).post(url).send({ ...body, setupId: other.id });
+    expect(configProbe.status).toBe(404);
+    expect(configProbe.body).not.toHaveProperty("adapterConfig");
+    expect(configProbe.body).not.toHaveProperty("runtimeConfig");
     expect(await db.select().from(approvals).where(eq(approvals.companyId, companyId))).toHaveLength(0);
     const saved = await request(app(board)).patch(`/api/agents/${setupId}`).send({ adapterConfig: { command: "draft-command" } });
     expect(saved.status, JSON.stringify(saved.body)).toBe(200);
@@ -197,6 +206,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const reopened = await request(app(board)).post(url).send(body);
     expect(reopened.status).toBe(201);
     expect(reopened.body).toMatchObject({ id: setupId, status: "pending_approval" });
+    await request(app({ ...board, userId: "other-creator" })).post(url).send(body).expect(404);
     await db.delete(approvals).where(eq(approvals.id, finished.body.approval.id));
     const recovered = await request(app(board)).post(hireUrl).send(finishBody);
     expect(recovered.status, JSON.stringify(recovered.body)).toBe(200);

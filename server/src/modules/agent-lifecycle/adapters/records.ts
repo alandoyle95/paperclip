@@ -20,6 +20,7 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
           throw conflict("Agent setup is no longer available");
         }
         if (options?.setupOnly && setup) {
+          if (setup.createdByUserId !== (options.createdByUserId ?? null)) throw notFound("Agent setup not found");
           const existing = await agentRecordQueries(txDb).getById(setup.id);
           if (!existing) throw notFound("Agent setup not found");
           return existing;

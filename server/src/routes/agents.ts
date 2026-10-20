@@ -4313,10 +4313,13 @@ export function agentRoutes(
 
     if (setupAgentId) {
       assertBoard(req);
+      if (!req.actor.userId) throw forbidden("User identity required for agent setup");
       const setupAgent = await svc.getById(setupAgentId);
       if (!setupAgent || setupAgent.companyId !== companyId) throw notFound("Agent setup not found");
       await assertCanConfigureAgentSetup(req, setupAgent, true);
       if (!setupAgent.lifecycleHolds.includes("setup")) {
+        if (!(await assertAgentReadAllowed(req, res, setupAgent))) return;
+        await assertCanReadConfigurations(req, companyId);
         if (["terminated", "rejected", "deleting"].includes(setupAgent.lifecycleState)) throw conflict("Agent setup is no longer available");
         const priorApprovals = await approvalsSvc.list(companyId, undefined,
           sql`type = 'hire_agent' AND payload ->> 'agentId' = ${setupAgentId}`);
@@ -4673,7 +4676,10 @@ export function agentRoutes(
       res.status(404).json({ error: "Company not found" });
       return;
     }
-    if (req.body.setupId) assertBoard(req);
+    if (req.body.setupId) {
+      assertBoard(req);
+      if (!req.actor.userId) throw forbidden("User identity required for agent setup");
+    }
     if (company.requireBoardApprovalForNewAgents && !req.body.setupId) {
       throw conflict(
         "Direct agent creation requires board approval. Use POST /api/companies/:companyId/agent-hires to create a pending hire approval.",
@@ -4792,6 +4798,10 @@ export function agentRoutes(
       },
     );
     if (setupId) {
+      if (!createdAgent.lifecycleHolds.includes("setup")) {
+        if (!(await assertAgentReadAllowed(req, res, createdAgent))) return;
+        await assertCanReadConfigurations(req, companyId);
+      }
       res.status(201).json(redactAgentRowForResponse(createdAgent));
       return;
     }
