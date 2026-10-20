@@ -847,6 +847,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       <div class="billing-metric"><strong>${campaignBilling.llm.runsWithReportedCost}/${campaignBilling.llm.runCount}</strong><span>Runs provider-priced</span></div>
       <p class="billing-note">Campaign costs include retained attempts, including failed retries. Result cards show the selected attempt. Provider-reported amounts and model estimates are separate; unpriced or unavailable runs are excluded, never counted as free. Coverage describes captured usage; unobserved setup, subscriptions, tools, CI and storage require additional accounting. Daytona runtime is a public-list-price estimate from captured lease time and pinned resources, before credits, discounts, storage allowance, or invoice adjustments. Local execution has no external runtime meter.</p>
     </section></details>
+    </section>
     <div class="results-heading" id="results"><h2 data-results-title>All results</h2><span data-results-description></span></div>
     <div data-feature-coverage>${renderJourneyFeatureCoverage(catalog, entryById)}</div>
     <section class="report-filters" aria-label="Filter test results">
