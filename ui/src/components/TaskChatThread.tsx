@@ -2614,11 +2614,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   useEffect(() => {
     const confirmed = submissionRequestId.current && comments.some(comment =>
       comment.clientRequestId === submissionRequestId.current && !("clientStatus" in comment && comment.clientStatus));
-    if (tailRunId || confirmed || (props.interruption && props.interruption.state !== "working")) {
+    // The previous intent's projection cannot acknowledge this submission.
+    if (tailRunId || confirmed) {
       setRunnerSubmissionPending(false);
       setSubmissionTakingLonger(false);
     }
-  }, [tailRunId, props.interruption, comments, runnerSubmissionPending]);
+  }, [tailRunId, comments, runnerSubmissionPending]);
   useEffect(() => {
     if (!runnerSubmissionPending || tailRunId) return;
     const timeout = window.setTimeout(

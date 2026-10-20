@@ -405,24 +405,38 @@ it("shows Thinking during admission and clears it when the saved follow-up enter
   expect(container.textContent).not.toContain("Working");
 });
 
-it.each(["task", "legacy"] as const)("clears %s admission Thinking when a message is saved without starting a run", async surface => {
+it.each((["task", "legacy"] as const).flatMap(surface =>
+  ([null, "failed", "resolved"] as const).map(previousState => ({ surface, previousState })),
+))("keeps $surface admission Thinking through an old $previousState projection until acknowledgement", async ({ surface, previousState }) => {
   let acknowledge!: () => void;
   const onAdd = vi.fn(() => new Promise<void>(resolve => { acknowledge = resolve; }));
+  const refresh = vi.fn();
   const Component = surface === "task" ? TaskChatThread : IssueChatThread;
   render(<Component comments={[]} issueId="issue" issueAssigneeAgentId="agent"
-    issueStatus="todo" onAdd={onAdd} interruption={null}
+    issueStatus="todo" onAdd={onAdd} onRefreshLatestComments={refresh}
+    interruption={previousState ? { intentId: "previous-intent", responsibility: "system", state: previousState,
+      nextRetryAt: null, canRetry: previousState === "failed", userAction: null,
+      sourceRunIds: ["previous-run"], observedRunId: "previous-run" } : null}
     agentMap={new Map([["agent", { id: "agent", name: "Worker", adapterType: "paperclip_runner" } as Agent]])} />);
   await act(async () => { editorCallbacks.change("Save this note."); });
   const send = surface === "task"
     ? container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')
     : [...container.querySelectorAll("button")].find(button => button.textContent === "Send");
   expect(send).toBeDefined();
-  await act(async () => { send!.click(); });
-  expect(onAdd).toHaveBeenCalledTimes(1);
-  expect(container.textContent).toContain("Thinking");
-  await act(async () => { acknowledge(); });
-  expect(container.textContent).not.toContain("Thinking");
-  expect(container.textContent).not.toContain("Taking longer than usual");
+  vi.useFakeTimers();
+  try {
+    await act(async () => { send!.click(); });
+    expect(onAdd).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("Thinking");
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(container.textContent).toContain("Taking longer than usual");
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await act(async () => { acknowledge(); });
+    expect(container.textContent).not.toContain("Thinking");
+    expect(container.textContent).not.toContain("Taking longer than usual");
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("prepares comment-link history and its composer before reveal", async () => {

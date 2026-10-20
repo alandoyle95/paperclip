@@ -6101,11 +6101,12 @@ export function IssueChatThread({
   useEffect(() => {
     const confirmed = submissionRequestId.current && comments.some(comment =>
       comment.clientRequestId === submissionRequestId.current && !("clientStatus" in comment && comment.clientStatus));
-    if (isRunning || confirmed || (interruption && interruption.state !== "working")) {
+    // The previous intent's projection cannot acknowledge this submission.
+    if (isRunning || confirmed) {
       setSubmissionPending(false);
       setSubmissionTakingLonger(false);
     }
-  }, [isRunning, interruption, comments, submissionPending]);
+  }, [isRunning, comments, submissionPending]);
   useEffect(() => {
     if (!submissionPending) return;
     const timer = window.setTimeout(() => {
