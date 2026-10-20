@@ -40,6 +40,15 @@ it("retains a campaign summary and refuses changing its budget on restart", asyn
     expect(endpoint.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:/);
     await endpoint.close(); await operations.close();
     expect(JSON.parse(await readFile(`${value.ledgerPath}.summary.json`, "utf8"))).toMatchObject({ limitUsd: "100.000000000", knownUsd: "0.000000000", requests: [] });
+    const resumed = await openEvalOperations(file, [cell], 0, { OPENAI_API_KEY: "private-fixture" });
+    const retry = await resumed.start(cell, "retry-after-restart", 1);
+    await retry.close();
+    await expect(resumed.start(cell, "third-attempt", 1)).rejects.toThrow("attempt cap");
+    await resumed.close();
+    const summary = JSON.parse(await readFile(`${value.ledgerPath}.summary.json`, "utf8"));
+    expect(summary.admittedAttempts).toEqual([{ executionId: cell.id, attemptId: "attempt" }, { executionId: cell.id, attemptId: "retry-after-restart" }]);
+    await writeFile(file, JSON.stringify({ ...value, maxAttemptsPerExecution: 3 }));
+    await expect(openEvalOperations(file, [cell], 0, { OPENAI_API_KEY: "private-fixture" })).rejects.toThrow("limits changed");
     await writeFile(file, JSON.stringify({ ...value, limits: { ...value.limits, maxUsd: "101" } }));
     await expect(openEvalOperations(file, [cell], 0, { OPENAI_API_KEY: "private-fixture" })).rejects.toThrow("limits changed");
   } finally { await rm(root, { recursive: true, force: true }); }

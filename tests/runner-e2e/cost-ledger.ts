@@ -10,6 +10,8 @@ export interface EvalSpendLimits {
   deadlineAt: string;
   maxRequests: number;
   maxConcurrent: number;
+  /** Absent only in older or request-only journals. Operations always sets it. */
+  maxAttemptsPerExecution?: number;
 }
 export interface EvalChargeIdentity {
   executionId: string;
@@ -35,6 +37,7 @@ export interface EvalCostObservation {
 
 type Event =
   | { type: "campaign"; limits: EvalSpendLimits }
+  | { type: "attempt"; executionId: string; attemptId: string }
   | { type: "reserve"; requestId: string; identity: EvalChargeIdentity; maxUsd: string }
   | { type: "observe"; observation: EvalCostObservation }
   | { type: "finish"; requestId: string; outcome: "succeeded" | "failed" | "cancelled" };
@@ -60,12 +63,14 @@ export class EvalAdmissionError extends Error {}
 export class EvalSpendState {
   readonly requests = new Map<string, RequestState>();
   readonly observations = new Map<string, EvalCostObservation>();
+  readonly attempts = new Map<string, string>();
   private providerRequests = new Map<string, string>();
   constructor(readonly limits: EvalSpendLimits) {
-    fields(limits, ["campaignId", "maxUsd", "deadlineAt", "maxRequests", "maxConcurrent"]);
+    fields(limits, ["campaignId", "maxUsd", "deadlineAt", "maxRequests", "maxConcurrent", "maxAttemptsPerExecution"]);
     if (!validId(limits.campaignId) || amount(limits.maxUsd) <= 0n || !Number.isFinite(Date.parse(limits.deadlineAt))
         || !Number.isSafeInteger(limits.maxRequests) || limits.maxRequests < 1
-        || !Number.isSafeInteger(limits.maxConcurrent) || limits.maxConcurrent < 1) throw new Error("Invalid eval spend limits");
+        || !Number.isSafeInteger(limits.maxConcurrent) || limits.maxConcurrent < 1
+        || limits.maxAttemptsPerExecution !== undefined && (!Number.isSafeInteger(limits.maxAttemptsPerExecution) || limits.maxAttemptsPerExecution < 1)) throw new Error("Invalid eval spend limits");
   }
   private authoritative(request: RequestState) {
     const priced = request.observations.filter(value => value.costUsd !== undefined);
@@ -99,15 +104,23 @@ export class EvalSpendState {
     });
     return { campaignId: this.limits.campaignId, limitUsd: usd(amount(this.limits.maxUsd)), knownUsd: usd(known), heldUsd: usd(held), committedUsd: usd(committed),
       overBudget: committed > amount(this.limits.maxUsd), unknownRequests: unknown, conflictingRequests: conflicts, inflight,
-      breakdown: Object.fromEntries(Object.entries(breakdown).map(([key, value]) => [key, usd(value)])), requests };
+      breakdown: Object.fromEntries(Object.entries(breakdown).map(([key, value]) => [key, usd(value)])), requests,
+      admittedAttempts: [...this.attempts].map(([attemptId, executionId]) => ({ executionId, attemptId })) };
   }
   validate(event: Event, now = Date.now()) {
     if (event.type === "campaign") throw new Error("Duplicate campaign event");
-    if (event.type === "reserve") {
+    if (event.type === "attempt") {
+      fields(event, ["type", "executionId", "attemptId"]);
+      if (!validId(event.executionId) || !validId(event.attemptId) || this.limits.maxAttemptsPerExecution === undefined) throw new Error("Invalid attempt admission");
+      if (this.attempts.has(event.attemptId)) throw new EvalAdmissionError("Eval attempt already admitted");
+      if (now >= Date.parse(this.limits.deadlineAt)) throw new EvalAdmissionError("Eval campaign deadline reached");
+      if ([...this.attempts.values()].filter(id => id === event.executionId).length >= this.limits.maxAttemptsPerExecution) throw new EvalAdmissionError("Eval campaign attempt cap reached");
+    } else if (event.type === "reserve") {
       fields(event.identity, ["executionId", "attemptId", "phase", "runId"]);
       if (!validId(event.requestId) || !validId(event.identity.executionId) || !validId(event.identity.attemptId)
           || event.identity.runId !== undefined && !validId(event.identity.runId)
           || !["setup", "agent", "judge", "feedback_review", "tool", "infrastructure"].includes(event.identity.phase)) throw new Error("Invalid request identity");
+      if (this.limits.maxAttemptsPerExecution !== undefined && this.attempts.get(event.identity.attemptId) !== event.identity.executionId) throw new EvalAdmissionError("Eval request has no admitted attempt");
       if (this.requests.has(event.requestId)) throw new Error("Request already reserved");
       if (amount(event.maxUsd) <= 0n) throw new Error("Request reservation must be positive");
       const current = this.snapshot();
@@ -141,7 +154,8 @@ export class EvalSpendState {
     } else throw new Error("Unknown ledger event");
   }
   apply(event: Event) {
-    if (event.type === "reserve") this.requests.set(event.requestId, { identity: event.identity, reserved: amount(event.maxUsd), observations: [], finished: false });
+    if (event.type === "attempt") this.attempts.set(event.attemptId, event.executionId);
+    else if (event.type === "reserve") this.requests.set(event.requestId, { identity: event.identity, reserved: amount(event.maxUsd), observations: [], finished: false });
     else if (event.type === "observe") {
       const o = event.observation;
       if (this.observations.has(o.observationId)) return;
@@ -212,6 +226,7 @@ export async function openEvalCostLedger(file: string, limits: EvalSpendLimits) 
       return operation;
     };
     return {
+      admitAttempt: (executionId: string, attemptId: string) => append({ type: "attempt", executionId, attemptId }),
       reserve: (requestId: string, identity: EvalChargeIdentity, maxUsd: string) => append({ type: "reserve", requestId, identity: structuredClone(identity), maxUsd }),
       observe: (observation: EvalCostObservation) => append({ type: "observe", observation: structuredClone(observation) }),
       finish: (requestId: string, outcome: "succeeded" | "failed" | "cancelled") => append({ type: "finish", requestId, outcome }),

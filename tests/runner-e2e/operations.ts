@@ -24,6 +24,7 @@ export function validateEvalOperationsManifest(value: EvalOperationsManifest, ex
       || !Array.isArray(value.executionIds) || new Set(value.executionIds).size !== value.executionIds.length
       || JSON.stringify([...value.executionIds].sort()) !== JSON.stringify(executions.map(e => e.id).sort())
       || !Number.isSafeInteger(value.maxAttemptsPerExecution) || value.maxAttemptsPerExecution < 1
+      || value.limits.maxAttemptsPerExecution !== undefined && value.limits.maxAttemptsPerExecution !== value.maxAttemptsPerExecution
       || maxRetries + 1 > value.maxAttemptsPerExecution || !Array.isArray(value.models) || value.models.length === 0) throw new Error("Eval operations selection or limits mismatch");
   if (value.route === "braintrust" && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.projectId ?? "")) throw new Error("Braintrust gateway requires an explicit project UUID");
   const models = new Set<string>();
@@ -55,7 +56,7 @@ export async function openEvalOperations(file: string, executions: readonly Matr
   if (required.some(name => !env[name]?.trim())) throw new Error("Missing eval gateway upstream credential");
   const receiptDirectory = `${manifest.ledgerPath}.requests`;
   await mkdir(receiptDirectory, { recursive: true, mode: 0o700 });
-  const ledger = await openEvalCostLedger(manifest.ledgerPath, manifest.limits);
+  const ledger = await openEvalCostLedger(manifest.ledgerPath, { ...manifest.limits, maxAttemptsPerExecution: manifest.maxAttemptsPerExecution });
   const active = new Set<Awaited<ReturnType<typeof startEvalGateway>>>();
   const atomicJson = async (file: string, value: unknown) => {
     await writeFile(`${file}.tmp`, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
@@ -64,13 +65,17 @@ export async function openEvalOperations(file: string, executions: readonly Matr
   return {
     manifest,
     async start(execution: MatrixExecution, attemptId: string, attempt: number) {
-      if (attempt > manifest.maxAttemptsPerExecution || Date.now() >= Date.parse(manifest.limits.deadlineAt)) throw new Error("Eval operations attempt/deadline limit reached");
+      if (!Number.isSafeInteger(attempt) || attempt < 1 || attempt > manifest.maxAttemptsPerExecution || Date.now() >= Date.parse(manifest.limits.deadlineAt)) throw new Error("Eval operations attempt/deadline limit reached");
+      if (!manifest.executionIds.includes(execution.id)) throw new Error("Eval operation is outside the admitted selection");
       const provider = execution.profile.credential === "ANTHROPIC_API_KEY" ? "anthropic" : "openai";
       const model = manifest.models.find(m => m.provider === provider && m.price.model === execution.profile.model)!;
       const route: EvalGatewayRoute = { ...model, mode: manifest.route, projectId: manifest.projectId,
         endpointName: provider === "openai" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY",
         apiKey: env[manifest.route === "braintrust" ? "BRAINTRUST_API_KEY" : execution.profile.credential] ?? "" };
       if (!route.apiKey) throw new Error("Missing eval gateway upstream credential");
+      // Persist even attempts that fail before their first provider request.
+      // A restart or a new output campaign must not replenish the allowance.
+      await ledger.admitAttempt(execution.id, attemptId);
       const gateway = await startEvalGateway({ ledger, route,
         identity: { executionId: execution.id, attemptId, phase: "agent" }, deadlineAt: Date.parse(manifest.limits.deadlineAt),
         persist: (receipt: EvalGatewayReceipt) => atomicJson(path.join(receiptDirectory, `${receipt.requestId}.json`), receipt),

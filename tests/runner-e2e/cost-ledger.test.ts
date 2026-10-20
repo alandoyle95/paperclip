@@ -38,6 +38,29 @@ it("serializes competing admissions so concurrent requests cannot oversubscribe 
   } finally { await ledger.close(); }
 });
 
+it("durably caps attempts including zero-request failures and rejects unadmitted requests", async () => {
+  const cap = limits({ maxAttemptsPerExecution: 2 });
+  const { file, ledger } = await fixture({ maxAttemptsPerExecution: 2 });
+  await expect(ledger.reserve("request", identity, "0.1")).rejects.toThrow("no admitted attempt");
+  await ledger.admitAttempt(identity.executionId, "attempt-1");
+  // The worker dies before any model request; the admission must still count.
+  await ledger.close();
+  const resumed = await openEvalCostLedger(file, cap);
+  try {
+    await expect(resumed.admitAttempt(identity.executionId, "attempt-1")).rejects.toThrow("already admitted");
+    const competing = await Promise.allSettled([
+      resumed.admitAttempt(identity.executionId, "attempt-2"),
+      resumed.admitAttempt(identity.executionId, "attempt-3"),
+    ]);
+    expect(competing.map(result => result.status)).toEqual(["fulfilled", "rejected"]);
+    await resumed.reserve("request", { ...identity, attemptId: "attempt-2" }, "0.1");
+    await resumed.admitAttempt("another.cell", "another-attempt");
+    await expect(resumed.reserve("wrong-cell", { ...identity, attemptId: "another-attempt" }, "0.1")).rejects.toThrow("no admitted attempt");
+    expect((await readEvalCostLedger(file)).state.snapshot().admittedAttempts).toHaveLength(3);
+  } finally { await resumed.close(); }
+  await expect(openEvalCostLedger(file, limits({ maxAttemptsPerExecution: 3 }))).rejects.toThrow("limits changed");
+});
+
 it("holds unknown/cancelled charges after restart and counts failed retries independently", async () => {
   const { file, ledger } = await fixture();
   await ledger.reserve("request", identity, "0.5");

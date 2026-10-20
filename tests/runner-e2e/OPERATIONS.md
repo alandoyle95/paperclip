@@ -71,6 +71,11 @@ running a real campaign. The launcher does not discover current prices for you.
 
 `executionIds` must equal the launcher's selected set, and the retry option must
 fit `maxAttemptsPerExecution`. Use `--list` to resolve the selection first.
+Operations records this attempt cap in the journal's immutable limits and fsyncs
+each attempt admission before starting its gateway. The count is per execution
+across the whole shared journal, including restarts, renamed output campaigns,
+and attempts that fail before making any provider request. Changing the cap or
+reusing an admitted attempt ID is refused.
 The maximum input value is the verified provider context ceiling, **not** a
 requested input cap. The gateway clamps output to `maximumOutputTokens`; it does
 not tokenize or truncate prompts. The conservative reservation prices the whole
@@ -131,8 +136,10 @@ lag and discounts can differ; a local list-price cap is not a provider-side cap.
 Resuming the same journal requires exactly the original limits. A dead process
 can leave a lock and held reservations; inspect the owner and upstream receipts
 before recovering it. Never delete a live writer's lock or reset a ledger merely
-to regain budget. The per-invocation retry limit is not yet a durable cross-restart
-attempt counter; the shared request and dollar caps still apply across restarts.
+to regain budget. Older journals without an attempt cap remain readable for
+reporting and reconciliation. Operations refuses to resume them under the new
+limits because their zero-request attempts cannot be reconstructed from request
+receipts. Do not replace or reset an active pilot ledger to evade this check.
 
 No recurring schedule is enabled by this integration. Qualification of actual
 agent streams, tools, continuation, cancellation, native traces, and remote routes
