@@ -36,7 +36,11 @@ import { hasVerifiedWorkspaceRepair, readWorkspaceRecovery } from "./workspace-r
 import { getExecutionBlocker } from "./execution-blocker.js";
 import * as workerProof from "./native-runtime/native-workspace-platform-proof.js";
 const targets = vi.hoisted(() => new Map<string, AdapterSandboxExecutionTarget>());
-vi.mock("./environment-execution-target.js", () => ({ resolveEnvironmentExecutionTarget: async (input: { leaseId: string }) => targets.get(input.leaseId) }));
+vi.mock("./environment-execution-target.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("./environment-execution-target.js")>();
+  return { ...actual, resolveEnvironmentExecutionTarget: async (input: Parameters<typeof actual.resolveEnvironmentExecutionTarget>[0]) =>
+    targets.get(input.leaseId) ?? actual.resolveEnvironmentExecutionTarget(input) };
+});
 
 describe("automatic retained workspace recovery", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -290,7 +294,7 @@ describe("automatic retained workspace recovery", () => {
     await recoverRetainedWorkspace(f.input);
     const source = await run(f.runId);
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: source.agentId, status: "running" });
-    const request = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: "board",
+    const request = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: "local-board", actorSource: "local_implicit",
       observedRunId: source.id, idempotencyKey: randomUUID() });
     await heartbeatService(db).resumeTaskRetry(f.companyId, request.requestId!);
     const [successor] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
@@ -304,7 +308,7 @@ describe("automatic retained workspace recovery", () => {
     const localEnvironment = await environmentService(db).ensureLocalEnvironment(f.companyId);
     const prepared = await prepareHeartbeatWorkspace(db, {
       run: successor, agent,
-      task: { issueRef: issue, issueId: f.issueId, context: { issueId: f.issueId }, responsibleUserId: "board",
+      task: { issueRef: issue, issueId: f.issueId, context: { issueId: f.issueId }, responsibleUserId: "local-board",
         previousSessionParams: null, freshWorkspace: readiness },
       policy: { trustPreset: { kind: "standard", preset: "standard", boundary: null, sourcePresets: {} },
         isolatedWorkspacesEnabled: false, effectiveExecutionWorkspaceMode: "shared_workspace",
