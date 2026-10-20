@@ -157,7 +157,7 @@ it("replays admissions when the deadline crosses between validation and journal 
   vi.setSystemTime(admittedAt);
   const { file, ledger } = await fixture();
   const validate = EvalSpendState.prototype.validate;
-  const validation = vi.spyOn(EvalSpendState.prototype, "validate").mockImplementation(function (event, now) {
+  const validation = vi.spyOn(EvalSpendState.prototype, "validate").mockImplementation(function (this: EvalSpendState, event, now) {
     validate.call(this, event, now);
     vi.setSystemTime(admittedAt + 2);
   });
