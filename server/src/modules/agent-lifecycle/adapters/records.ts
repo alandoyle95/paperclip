@@ -16,13 +16,16 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
         const tx = txDb;
         const setupId = options?.setupAgentId ?? (options?.setupOnly ? data.id : undefined);
         const [setup] = setupId ? await tx.select().from(agents).where(eq(agents.id, setupId)).for("update") : [];
-        if (setup && (setup.companyId !== companyId || setup.lifecycleState !== "paused" || !setup.lifecycleHolds.includes("setup"))) {
+        if (setup && setup.companyId !== companyId) {
           throw conflict("Agent setup is no longer available");
         }
         if (options?.setupOnly && setup) {
           const existing = await agentRecordQueries(txDb).getById(setup.id);
           if (!existing) throw notFound("Agent setup not found");
           return existing;
+        }
+        if (setup && (setup.lifecycleState !== "paused" || !setup.lifecycleHolds.includes("setup"))) {
+          throw conflict("Agent setup is no longer available");
         }
         if (options?.setupAgentId && !setup) throw notFound("Agent setup not found");
         const prepared = await effects.prepareHire(txDb, companyId, data, options);

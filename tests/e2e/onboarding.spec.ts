@@ -525,7 +525,7 @@ test.describe("Onboarding wizard", () => {
     await expect.poll(readDraft).toMatchObject(savedSelection);
     const assertResumedLogin = async () => {
       await expect(page.getByRole("heading", { name: "Connect a model", exact: true })).toBeVisible({ timeout: 15_000 });
-      await expect(page.getByText("Ada", { exact: true })).toBeVisible();
+      await expect(page.getByTestId("onboarding-wizard").getByText("Ada", { exact: true })).toBeVisible();
       await expect(page.getByRole("radio", { name: "Claude Subscription", exact: true })).toBeChecked();
       await expect(cardInstruction).toBeVisible({ timeout: 15_000 });
       await expect(authorizationLink).toBeVisible({ timeout: 15_000 });

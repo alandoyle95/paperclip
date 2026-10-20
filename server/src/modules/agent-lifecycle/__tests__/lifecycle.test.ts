@@ -119,6 +119,8 @@ const support = await getEmbeddedPostgresTestSupport();
     await work.process(id);
     expect(runHost).not.toHaveBeenCalled();
     expect(await current(id)).toMatchObject({ status: "paused", lifecycleState: "paused", lifecycleHolds: ["setup"] });
+    expect(await db.select().from(principalPermissionGrants).where(eq(principalPermissionGrants.principalId, id))).toHaveLength(0);
+    await expect(agentConfiguration(db).createApiKey(id, "Incomplete setup")).rejects.toThrow("Finish agent setup");
     await expect(lifecycle.resumeAgent(id)).rejects.toThrow("Finish agent setup");
     const finished = await lifecycle.requestHire(companyId, { id, name: "Early agent", adapterType: "process", status: "idle" }, { setupAgentId: id });
     expect(finished).toMatchObject({ id, name: "Early agent" });
@@ -162,11 +164,13 @@ const support = await getEmbeddedPostgresTestSupport();
     const setupId = randomUUID();
     const body = { setupId, name: "Wizard agent", adapterType: "process" };
     const url = `/api/companies/${companyId}/agents`;
-    const [first, retry] = await Promise.all([request(app(board)).post(url).send(body), request(app(board)).post(url).send(body)]);
-    expect(first.status, JSON.stringify(first.body)).toBe(201);
-    expect(first.body).toMatchObject({ id: setupId, pauseReason: "setup", lifecycleState: "paused" });
-    expect(retry.status, JSON.stringify(retry.body)).toBe(201);
-    expect(retry.body.id).toBe(setupId);
+    const attempts = await Promise.all(Array.from({ length: 4 }, () => request(app(board)).post(url).send(body)));
+    for (const attempt of attempts) {
+      expect(attempt.status, JSON.stringify(attempt.body)).toBe(201);
+      expect(attempt.body).toMatchObject({ id: setupId, pauseReason: "setup", lifecycleState: "paused" });
+    }
+    expect(await db.select().from(agents).where(eq(agents.companyId, companyId))).toHaveLength(1);
+    expect(await db.select().from(companyMemberships).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalType, "agent")))).toHaveLength(0);
     expect(await db.select().from(approvals).where(eq(approvals.companyId, companyId))).toHaveLength(0);
     const saved = await request(app(board)).patch(`/api/agents/${setupId}`).send({ adapterConfig: { command: "draft-command" } });
     expect(saved.status, JSON.stringify(saved.body)).toBe(200);
@@ -180,6 +184,28 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(finished.status, JSON.stringify(finished.body)).toBe(201);
     expect(finished.body.agent).toMatchObject({ id: setupId, name: "Wizard agent", lifecycleState: "pending_approval" });
     expect(finished.body.approval.payload).toMatchObject({ agentId: setupId, adapterConfig: { command: "verified-command" } });
+    expect(await db.select().from(companyMemberships).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, setupId)))).toHaveLength(1);
+    const finishBody = { setupAgentId: setupId, name: "Changed on retry", adapterType: "process", adapterConfig: { command: "unapproved-command" } };
+    const hireUrl = `/api/companies/${companyId}/agent-hires`;
+    const retries = await Promise.all(Array.from({ length: 3 }, () => request(app(board)).post(hireUrl).send(finishBody)));
+    for (const retry of retries) {
+      expect(retry.status, JSON.stringify(retry.body)).toBe(200);
+      expect(retry.body.agent).toMatchObject({ id: setupId, name: "Wizard agent", adapterConfig: { command: "verified-command" } });
+      expect(retry.body.approval.id).toBe(finished.body.approval.id);
+    }
+    await request(app({ ...board, userId: "other-creator" })).post(hireUrl).send(finishBody).expect(403);
+    const reopened = await request(app(board)).post(url).send(body);
+    expect(reopened.status).toBe(201);
+    expect(reopened.body).toMatchObject({ id: setupId, status: "pending_approval" });
+    await db.delete(approvals).where(eq(approvals.id, finished.body.approval.id));
+    const recovered = await request(app(board)).post(hireUrl).send(finishBody);
+    expect(recovered.status, JSON.stringify(recovered.body)).toBe(200);
+    expect(recovered.body.approval.payload).toMatchObject({ name: "Wizard agent", adapterConfig: { command: "verified-command" } });
+    await approvalService(db).approve(recovered.body.approval.id, "board");
+    const approvedRetry = await request(app(board)).post(hireUrl).send(finishBody);
+    expect(approvedRetry.status).toBe(200);
+    expect(approvedRetry.body.approval.status).toBe("approved");
+    expect(await db.select().from(approvals).where(eq(approvals.companyId, companyId))).toHaveLength(1);
   });
 
   it("rolls back a hire and its grants when hire initialization fails", async () => {

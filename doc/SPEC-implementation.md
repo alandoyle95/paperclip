@@ -1312,7 +1312,8 @@ The Core setup wizard creates its agent record before authentication and runtime
 configuration. `POST /companies/:companyId/agents` accepts a board-only `setupId`
 (a UUID used as the agent ID). The record stays paused with a `setup` hold;
 repeating that request reuses the same unfinished record. It starts no lifecycle
-preparation and creates no hire approval. Normal create requests keep their
+preparation and creates no hire approval. Instructions, task-assignment membership,
+and creation activity are applied at final hire. Normal create requests keep their
 existing behavior.
 
 The wizard saves configuration on that record through `PATCH /agents/:agentId`.
@@ -1320,7 +1321,11 @@ To finish, it submits the final configuration to
 `POST /companies/:companyId/agent-hires` with `setupAgentId`. Core validates the
 configuration and completes the same record. Companies that require approval
 receive a hire approval for that final configuration; other agents enter normal
-preparation and verification. A setup record cannot be resumed into execution.
+preparation and verification. A setup record cannot be resumed into execution,
+receive API keys, or authenticate as an agent. Its standard grants apply at hire.
+Authorized retries recover the completed record and its existing hire approval;
+they cannot replace the submitted configuration. Both setup entry points save
+configuration on the record so the roster can reopen it with the same runner.
 Sandbox authentication and saved AI connections keep their existing flows.
 
 - `GET /companies/:companyId/agents`

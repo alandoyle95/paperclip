@@ -735,6 +735,7 @@ function OnboardingWizardInner({
   const [setupError, setSetupError] = useState(false);
   const [setupAttempt, setSetupAttempt] = useState(0);
   const preparingSetup = useRef(false);
+  const setupSave = useRef<Promise<unknown>>(Promise.resolve());
   const [createdCompanyGoalId, setCreatedCompanyGoalId] = useState<string | null>(
     (saved?.createdCompanyGoalId as string) ?? null
   );
@@ -1295,7 +1296,7 @@ function OnboardingWizardInner({
       });
     })().then(agent => {
       if (!stillTheSameCompany(companyId)) return;
-      if (agent.pauseReason === "setup") setSetupAgentId(agent.id);
+      if (agent.pauseReason === "setup" || agent.status === "pending_approval") setSetupAgentId(agent.id);
       else setCreatedAgentId(agent.id);
       setSetupPrepared(true);
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
@@ -2025,6 +2026,25 @@ function OnboardingWizardInner({
     return config;
   }
 
+  const setupSnapshot = step === 4 && setupPrepared && setupAgentId && !createdAgentId && sourceSelected && runnerDiscoveryReady && !loading
+    ? JSON.stringify({ name: agentName.trim() || AGENT_ROLE_LABELS[agentRole], appearance: agentAppearance,
+      adapterType, runner, adapterConfig: buildAdapterConfig(Boolean(apiKeySecretRef.current?.binding)),
+      defaultEnvironmentId: resolvedLoginEnvironmentId,
+      runtimeConfig: { ...buildNewAgentRuntimeConfig({ heartbeatEnabled: false }), ...(managedBindingForStep() ? { aiConnection: managedBindingForStep() } : {}) } })
+    : null;
+  useEffect(() => {
+    if (!setupSnapshot || !setupAgentId || !createdCompanyId) return;
+    const companyId = createdCompanyId;
+    const id = setupAgentId;
+    setupSave.current = setupSave.current.catch(() => {}).then(async () => {
+      if (!stillTheSameCompany(companyId) || hiringAgentRef.current !== null) return;
+      await agentsApi.update(id, JSON.parse(setupSnapshot), companyId);
+    });
+    void setupSave.current.catch(cause => {
+      if (stillTheSameCompany(companyId)) setError(cause instanceof Error ? cause.message : "Could not save agent setup.");
+    });
+  }, [setupSnapshot, setupAgentId, createdCompanyId]);
+
   async function runAdapterEnvironmentTest(
     adapterConfigOverride?: Record<string, unknown>,
     appliedStoredClaudeLoginBinding = false,
@@ -2404,6 +2424,8 @@ function OnboardingWizardInner({
       // Invalidation prevents sending a hire for an abandoned verification.
       // Once submitted, this existing API has no rollback contract; navigation
       // can only suppress its completion, just as it does for a manual hire.
+      await setupSave.current.catch(() => {});
+      if (!isCurrent()) return;
       const hire = await agentsApi.hire(createdCompanyId, {
         ...(setupAgentId ? { setupAgentId } : {}),
         // The name is optional; an agent that reaches here without one is

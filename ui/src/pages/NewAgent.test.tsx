@@ -91,6 +91,38 @@ describe("New agent setup", () => {
     expect(api.update.mock.calls[0][1].applyStoredClaudeLogin).toBe(true);
   });
 
+  it("saves a typed gateway key as a secret and restores it without re-entry", async () => {
+    await render("hermes_gateway");
+    await fill("Hermes API base URL", "https://hermes.example.test");
+    await fill("API_SERVER_KEY", "saved-gateway-key");
+    await click("Save & exit");
+    const setupId = api.create.mock.calls[0][1].setupId;
+    expect(api.update.mock.calls.at(-1)![1].adapterConfig.apiKey).toMatchObject({ type: "secret_ref", secretId: "org-secret-1" });
+    expect(JSON.stringify(api.update.mock.calls)).not.toContain("saved-gateway-key");
+    await act(async () => root.render(null));
+    cache.clear();
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "hermes_gateway", setupAgentId: setupId });
+    await renderCurrentParams();
+    await settle();
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].adapterConfig.apiKey).toMatchObject({ type: "secret_ref", secretId: "org-secret-1" });
+    expect(secrets.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains an unfinished legacy harness when the current target defaults to Paperclip Runner", async () => {
+    await render("codex_local");
+    const setupId = api.create.mock.calls[0][1].setupId;
+    await act(async () => root.render(null));
+    cache.clear();
+    state.adapters = state.adapters.map((adapter: any) => adapter.type === "codex_local" ? { ...adapter, defaultRunner: "paperclip", supportedRunners: ["paperclip", "legacy"] } : adapter);
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "codex_local", setupAgentId: setupId });
+    await renderCurrentParams();
+    await settle();
+    await connect("OpenAI");
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1]).toMatchObject({ adapterType: "codex_local", runner: "legacy" });
+  });
+
   it.each([
     ["paperclip", "Connect", "image"], ["legacy", "Connect", "image"],
     ["paperclip", "Finish setup", "image"], ["legacy", "Finish setup", "image"],
@@ -1034,11 +1066,11 @@ describe("New agent setup", () => {
     await act(async () => root.render(null));
     expect(secrets.createUserSecretDefinition).not.toHaveBeenCalled();
   });
-  it("removes the staged credential when hiring fails", async () => {
+  it("removes the staged credential when saving setup fails", async () => {
     await render();
     await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
     await fill("OPENROUTER_API_KEY", "new-key");
-    api.hire.mockRejectedValueOnce(new Error("Creation rejected"));
+    api.update.mockRejectedValueOnce(new Error("Creation rejected"));
     await click("Finish setup");
     expect(secrets.remove).toHaveBeenCalledWith("org-secret-1");
     expect(container.textContent).toContain("Creation rejected");
@@ -1047,11 +1079,23 @@ describe("New agent setup", () => {
     await render();
     await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
     await fill("OPENROUTER_API_KEY", "new-key");
-    api.hire.mockRejectedValueOnce(new Error("Agent quota exceeded"));
+    api.update.mockRejectedValueOnce(new Error("Agent quota exceeded"));
     secrets.remove.mockRejectedValueOnce(new Error("Cleanup unavailable"));
     await click("Finish setup");
     expect(container.textContent).toContain("Agent quota exceeded");
     expect(container.textContent).toContain("Could not remove an unused setup credential");
+  });
+  it("retains the credential on the setup record when the hire response is lost", async () => {
+    await render();
+    await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
+    await fill("OPENROUTER_API_KEY", "new-key");
+    api.hire.mockRejectedValueOnce(new Error("Response lost"));
+    await click("Finish setup");
+    expect(secrets.remove).not.toHaveBeenCalled();
+    expect(api.update.mock.calls.at(-1)![1].adapterConfig.env.OPENROUTER_API_KEY).toMatchObject({ type: "secret_ref" });
+    await click("Finish setup");
+    expect(secrets.create).toHaveBeenCalledTimes(1);
+    expect(api.hire).toHaveBeenCalledTimes(2);
   });
   it("requires an explicit provider/model for Pi", async () => {
     await render();

@@ -437,7 +437,7 @@ export function AgentActionButtons({
         <Button variant="outline" size={size} disabled={disabled} onClick={() => navigate(`/agents/new?${new URLSearchParams({
           name: agent.name, adapterType: agent.adapterType, setupAgentId: agent.id,
           runnerProvider: String(agent.adapterConfig.provider === "acpx" ? agent.adapterConfig.acpxAgent : agent.adapterConfig.provider ?? "codex"),
-          ...(agent.adapterType === "paperclip_runner" ? { runner: "paperclip" } : {}),
+          ...(agent.adapterType === "paperclip_runner" ? { runner: "paperclip" } : ["codex_local", "claude_local"].includes(agent.adapterType) ? { runner: "legacy" } : {}),
         })}`)}>Finish setup</Button>
       ) : (
         <PauseResumeButton

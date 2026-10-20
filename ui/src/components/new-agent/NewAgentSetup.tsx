@@ -97,7 +97,7 @@ export function NewAgentSetup() {
       companyId={selectedCompanyId}
       name={params.get("name") ?? ""}
       adapterType={params.get("adapterType") === "paperclip_runner" && ["codex", "claude"].includes(params.get("runnerProvider") ?? "codex") ? params.get("runnerProvider") === "claude" ? "claude_local" : "codex_local" : params.get("adapterType") ?? ""}
-      initialRunner={params.get("runner") ?? (params.get("adapterType") === "paperclip_runner" && ["codex", "claude"].includes(params.get("runnerProvider") ?? "codex") ? "paperclip" : "auto")}
+      initialRunner={params.get("runner") ?? (params.get("adapterType") === "paperclip_runner" && ["codex", "claude"].includes(params.get("runnerProvider") ?? "codex") ? "paperclip" : params.has("setupAgentId") && ["codex_local", "claude_local"].includes(params.get("adapterType") ?? "") ? "legacy" : "auto")}
       preserveNativeHarness={params.get("adapterType") === "paperclip_runner" && ["codex", "claude"].includes(params.get("runnerProvider") ?? "codex")}
       runnerProvider={params.get("runnerProvider") ?? "codex"}
       createdAgentId={params.get("createdAgentId")}
@@ -568,20 +568,42 @@ function Setup({
   async function saveDraft(nextConnection = connection, exit = false) {
     if (!created || completed) return;
     const binding = runtimeAiBinding ?? nextConnection?.aiConnection;
-    const agent = await agentsApi.update(created.id, {
-      adapterType: requestAdapterType, runner, adapterConfig: buildConfig(nextConnection),
-      defaultEnvironmentId: environmentOverride || (forced.forced || managedOnly ? environmentId : null),
-      runtimeConfig: { ...created.runtimeConfig, ...(binding ? { aiConnection: binding } : {}) },
-      ...(nextConnection?.applyStoredClaudeLogin ? { applyStoredClaudeLogin: true } : {}),
-    }, companyId);
-    setCreated(agent);
-    cache.setQueryData(queryKeys.agents.detail(agent.id), agent);
-    if (exit) navigate("/agents/all");
+    const config = buildConfig(nextConnection);
+    const staged: Array<{ remove: () => Promise<unknown> }> = [];
+    let saved = false;
+    try {
+      for (const [key, value] of Object.entries(pendingCredentials(nextConnection))) {
+        const secret = await (connectionAdapter ? storeProviderApiKey : storeOrganizationApiKey)(companyId, key, value);
+        staged.push(secret);
+        if (adapterType === "hermes_gateway" && key === "API_SERVER_KEY") config.apiKey = secret.binding;
+        else config.env = { ...((config.env as object) ?? {}), [key]: secret.binding };
+      }
+      const agent = await agentsApi.update(created.id, {
+        adapterType: requestAdapterType, runner, adapterConfig: config,
+        defaultEnvironmentId: environmentOverride || (forced.forced || managedOnly ? environmentId : null),
+        runtimeConfig: { ...created.runtimeConfig, ...(binding ? { aiConnection: binding } : {}) },
+        ...(nextConnection?.applyStoredClaudeLogin ? { applyStoredClaudeLogin: true } : {}),
+      }, companyId);
+      saved = true;
+      if (staged.length) {
+        setApiKey("");
+        setProviderBinding((adapterType === "hermes_gateway" ? config.apiKey : (config.env as Record<string, EnvBinding>)?.[envKey]) as EnvBinding);
+      }
+      setCreated(agent);
+      cache.setQueryData(queryKeys.agents.detail(agent.id), agent);
+      if (exit) navigate("/agents/all");
+    } finally {
+      if (!saved) await Promise.all(staged.map(secret => secret.remove()));
+    }
   }
 
   async function saveAndExit() {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
     try { await saveDraft(connection, true); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Could not save agent setup."); }
+    finally { savingRef.current = false; setSaving(false); }
   }
 
   async function runTest(nextConnection = connection): Promise<Record<string, unknown> | null> {
@@ -672,6 +694,12 @@ function Setup({
             ...((config.env as object) ?? {}),
             [key]: secret.binding,
           };
+      }
+      if (staged.length) {
+        await agentsApi.update(created.id, { adapterType: requestAdapterType, runner, adapterConfig: config }, companyId);
+        staged.length = 0;
+        setApiKey("");
+        setProviderBinding((adapterType === "hermes_gateway" ? config.apiKey : (config.env as Record<string, EnvBinding>)?.[envKey]) as EnvBinding);
       }
       const response = await agentsApi.hire(companyId, {
         setupAgentId: created.id,

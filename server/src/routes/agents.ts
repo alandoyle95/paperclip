@@ -1787,9 +1787,9 @@ export function agentRoutes(
 
   async function assertCanConfigureAgentSetup(req: Request, targetAgent: {
     id: string; companyId: string; createdByUserId?: string | null; lifecycleState?: string; pauseReason?: string | null;
-  }) {
+  }, allowCompleted = false) {
     if (req.actor.type === "board" && req.actor.userId && targetAgent.createdByUserId === req.actor.userId
-      && targetAgent.lifecycleState === "paused" && targetAgent.pauseReason === "setup") {
+      && (allowCompleted || (targetAgent.lifecycleState === "paused" && targetAgent.pauseReason === "setup"))) {
       await assertCanCreateAgentsForCompany(req, targetAgent.companyId);
       return;
     }
@@ -4285,7 +4285,7 @@ export function agentRoutes(
   // adapter-config secret lands in the activity log.
   const hireFingerprint = (body: unknown): string => sha256Digest(body);
 
-  router.post("/companies/:companyId/agent-hires", validate(createAgentHireSchema), async (req, res) => {
+  const handleAgentHire = async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
     await assertCanCreateAgentsForCompany(req, companyId);
     const sourceIssueIds = parseSourceIssueIds(req.body);
@@ -4315,7 +4315,31 @@ export function agentRoutes(
       assertBoard(req);
       const setupAgent = await svc.getById(setupAgentId);
       if (!setupAgent || setupAgent.companyId !== companyId) throw notFound("Agent setup not found");
-      await assertCanConfigureAgentSetup(req, setupAgent);
+      await assertCanConfigureAgentSetup(req, setupAgent, true);
+      if (!setupAgent.lifecycleHolds.includes("setup")) {
+        if (["terminated", "rejected", "deleting"].includes(setupAgent.lifecycleState)) throw conflict("Agent setup is no longer available");
+        const priorApprovals = await approvalsSvc.list(companyId, undefined,
+          sql`type = 'hire_agent' AND payload ->> 'agentId' = ${setupAgentId}`);
+        let approval = priorApprovals.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0] ?? null;
+        if (!approval && setupAgent.status === "pending_approval") {
+          const adapterConfig = redactEventPayload(setupAgent.adapterConfig) ?? {};
+          const runtimeConfig = redactEventPayload(setupAgent.runtimeConfig) ?? {};
+          const desiredSkills = readPaperclipSkillSyncPreference(setupAgent.adapterConfig).desiredSkills;
+          approval = await approvalsSvc.create(companyId, {
+            type: "hire_agent", requestedByAgentId: null, requestedByUserId: req.actor.userId ?? null,
+            status: "pending", payload: {
+              name: setupAgent.name, role: setupAgent.role, title: setupAgent.title, icon: setupAgent.icon,
+              appearance: setupAgent.appearance, reportsTo: setupAgent.reportsTo, capabilities: setupAgent.capabilities,
+              adapterType: setupAgent.adapterType, adapterConfig, runtimeConfig, desiredSkills,
+              budgetMonthlyCents: setupAgent.budgetMonthlyCents, metadata: redactEventPayload(setupAgent.metadata ?? {}) ?? {},
+              agentId: setupAgent.id, requestedByAgentId: null,
+              requestedConfigurationSnapshot: { adapterType: setupAgent.adapterType, adapterConfig, runtimeConfig, desiredSkills },
+            }, decisionNote: null, decidedByUserId: null, decidedAt: null, updatedAt: new Date(),
+          });
+        }
+        res.status(200).json({ agent: redactAgentRowForResponse(setupAgent), approval, idempotent: true });
+        return;
+      }
     }
     const hiredAgentId = setupAgentId ?? randomUUID();
     const requestedHireConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
@@ -4477,7 +4501,7 @@ export function agentRoutes(
           lastHeartbeatAt: null,
         },
         {
-          setupAgentId,
+          ...(setupAgentId ? { setupAgentId } : {}),
           createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
           runnerResolved: true,
           responsibleUserId: responsibleUserForAiRequest(req),
@@ -4628,6 +4652,12 @@ export function agentRoutes(
       ? await withHireRunLock(`${companyId}:${runId}`, performHire)
       : await performHire();
     res.status(outcome.status).json(outcome.body);
+  };
+
+  router.post("/companies/:companyId/agent-hires", validate(createAgentHireSchema), async (req, res) => {
+    if (req.body.setupAgentId) {
+      await withHireRunLock(`setup:${req.params.companyId}:${req.body.setupAgentId}`, () => handleAgentHire(req, res));
+    } else await handleAgentHire(req, res);
   });
 
   router.post("/companies/:companyId/agents", validate(createAgentSchema), async (req, res) => {
@@ -4746,7 +4776,7 @@ export function agentRoutes(
         lastHeartbeatAt: null,
       },
       {
-        setupOnly: Boolean(setupId),
+        ...(setupId ? { setupOnly: true } : {}),
         createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
         runnerResolved: true,
         responsibleUserId: responsibleUserForAiRequest(req),
@@ -4761,6 +4791,10 @@ export function agentRoutes(
         },
       },
     );
+    if (setupId) {
+      res.status(201).json(redactAgentRowForResponse(createdAgent));
+      return;
+    }
     const onboardingFirstAgentBundle = await resolveOnboardingFirstAgentBundle({
       onboardingFirstAgent: createOnboardingFirstAgent,
       actorType: req.actor.type,
@@ -4791,7 +4825,7 @@ export function agentRoutes(
       },
     });
     const telemetryClient = getTelemetryClient();
-    if (telemetryClient && !setupId) {
+    if (telemetryClient) {
       trackAgentCreated(telemetryClient, { agentRole: agent.role, agentId: agent.id });
     }
 

@@ -80,6 +80,7 @@ const mockGoalsApi = vi.hoisted(() => ({
 }));
 const mockAgentsApi = vi.hoisted(() => ({
   create: vi.fn(async (_company: string, input: Record<string, unknown>) => ({ ...input, id: input.setupId, pauseReason: "setup" })),
+  update: vi.fn(async (_id: string, input: Record<string, unknown>) => input),
   adapterModels: vi.fn(async () => [] as Array<{ id: string; label: string }>),
   testEnvironment: vi.fn(
     async (): Promise<import("@paperclipai/shared").AdapterEnvironmentTestResult> => ({
@@ -2483,6 +2484,18 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       const { root } = await openStep4({ adapterType: "claude_local", setupAgentId: setupId });
       await pickSource(/Claude/);
       expect(mockAgentsApi.create).toHaveBeenCalledWith("company-new", expect.objectContaining({ setupId }));
+      await act(async () => root.unmount());
+    });
+
+    it("saves chosen model settings on the setup record before hiring", async () => {
+      mockAdapterBuild.buildAdapterConfig.mockImplementation(values => ({ model: values?.model }));
+      const { root } = await openStep4({ adapterType: "codex_local", model: "gpt-5.4" });
+      await pickSource(/OpenAI/);
+      const setupId = mockAgentsApi.create.mock.calls[0][1].setupId;
+      expect(mockAgentsApi.update).toHaveBeenCalledWith(setupId, expect.objectContaining({
+        adapterConfig: { model: "gpt-5.4" }, runtimeConfig: expect.objectContaining({ heartbeat: expect.objectContaining({ enabled: false }) }),
+      }), "company-new");
+      expect(mockAgentsApi.hire).not.toHaveBeenCalled();
       await act(async () => root.unmount());
     });
 
