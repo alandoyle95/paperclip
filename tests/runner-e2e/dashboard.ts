@@ -19,6 +19,7 @@ import type {
 } from "./types.js";
 import {
   aggregateCampaignBilling,
+  billingCoverageLabel,
   summarizeExecutionBilling,
 } from "./billing.js";
 
