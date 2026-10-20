@@ -57,8 +57,8 @@ export function observeFeedbackInvocations(runId: string, events: readonly Row[]
     if (typeof callId !== "string" || !callId) continue;
     const kind = feedbackKind(execution ? payload.name : item.name);
     const started = event.eventType === "tool.execution.started" || event.eventType === "item.started" && (payload.kind === "tool_call" || item.type === "tool_call");
-    if (started && kind) calls.set(callId, calls.get(callId) ?? { runId, callId, kind, outcome: "unknown" });
     const completed = event.eventType === "tool.execution.completed" || event.eventType === "item.completed" && (payload.kind === "tool_result" || item.type === "tool_result");
+    if ((execution || started || completed) && kind) calls.set(callId, calls.get(callId) ?? { runId, callId, kind, outcome: "unknown" });
     const call = calls.get(callId);
     if (!completed || !call || kind && kind !== call.kind) continue;
     const status = execution ? payload.status : item.status;

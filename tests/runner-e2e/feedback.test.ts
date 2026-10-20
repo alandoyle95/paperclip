@@ -4,6 +4,7 @@ import type { RunnerApi } from "./api.js";
 import { collectAttemptFeedback, emptyFeedbackSummary, feedbackReview, observeFeedbackInvocations, summarizeCampaignFeedback, type FeedbackEvidence } from "./feedback.js";
 import { runCleanupWithObservers } from "./cleanup-verification.js";
 import { isHistoricalBundlePathAllowed } from "./history-publish.js";
+import { canonicalProviderEventsFromOpenCodePart } from "../../packages/paperclip-runner/src/provider-events.js";
 
 function entry(id: string, body = "Please preserve the original tool error."): AgentCommentaryDetail {
   return { id, kind: "complaint", preview: body.slice(0, 280), body,
@@ -162,4 +163,21 @@ it("retains partial evidence if the run-detail lookup fails", async () => {
   }) });
   expect(summary).toMatchObject({ collection: "partial", invocationCollection: "partial", invocations: { unknown: 1 }, runsInspected: 1 });
   expect(retained!.diagnostics).toContain("run_detail_failed");
+});
+
+it("retains OpenCode feedback whose first observed update is running or terminal", () => {
+  const updates = [
+    { id: "running", status: "running", tool: "paperclip_submit_suggestion" },
+    { id: "failed", status: "error", tool: "paperclip_submit_complaint" },
+    { id: "completed", status: "completed", tool: "paperclip_submit_suggestion" },
+  ].flatMap(update => canonicalProviderEventsFromOpenCodePart({
+    id: update.id, messageID: "message", type: "tool", callID: update.id, tool: update.tool,
+    state: { status: update.status, input: {}, output: "fixture result", error: "fixture failure", time: { start: 1, end: 2 } },
+  }));
+  expect(updates.map(update => update.eventType)).toEqual(["tool.execution.progressed", "tool.execution.completed", "tool.execution.completed"]);
+  expect(observeFeedbackInvocations("run", updates.map((update, index) => event(index, update.eventType, update.payload)))).toEqual([
+    { runId: "run", callId: "running", kind: "suggestion", outcome: "unknown" },
+    { runId: "run", callId: "failed", kind: "complaint", outcome: "failed" },
+    { runId: "run", callId: "completed", kind: "suggestion", outcome: "completed" },
+  ]);
 });
