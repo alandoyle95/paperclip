@@ -1,10 +1,11 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, it } from "vitest";
 import { openEvalCostLedger } from "./cost-ledger.js";
 import { readEvalOperationsReport, renderEvalOperationsReport, validateEvalOperationsReport } from "./operations-report.js";
 import { buildRunnerCampaign } from "./history.js";
+import { regenerateRunnerDashboard } from "./dashboard-regenerate.js";
 
 it("reports shared setup/retry spending once, preserves unknown holds and omits private provider receipts", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "eval-operations-report-"));
@@ -28,6 +29,11 @@ it("reports shared setup/retry spending once, preserves unknown holds and omits 
     const campaign = buildRunnerCampaign({ campaignId: "retry-campaign", generatedAt: new Date().toISOString(), expected: [], results: [], operations: report });
     expect(campaign.operations).toEqual(report);
     expect(campaign.billing.reportedLlmCostUsd).toBe(0);
+    await writeFile(path.join(root, "normalized-results.json"), JSON.stringify(campaign));
+    await regenerateRunnerDashboard({ bundle: root, historyFile: null });
+    const rebuilt = JSON.parse(await readFile(path.join(root, "normalized-results.json"), "utf8"));
+    expect(rebuilt.operations).toEqual(report);
+    expect(await readFile(path.join(root, "dashboard.html"), "utf8")).toContain("$0.200000000 additional held reservations");
     expect(renderEvalOperationsReport(report)).toContain("Do not add its model subtotal to heartbeat totals");
     expect(renderEvalOperationsReport(report)).toContain("Infrastructure, storage, subscriptions");
     expect(() => validateEvalOperationsReport({ ...report, secret: "forbidden" } as never)).toThrow("Invalid retained");
