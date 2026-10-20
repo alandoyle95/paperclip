@@ -523,6 +523,13 @@ test.describe("Onboarding wizard", () => {
     };
     const readDraft = () => page.evaluate(() => JSON.parse(localStorage.getItem("paperclip-onboarding-state") ?? "null"));
     await expect.poll(readDraft).toMatchObject(savedSelection);
+    const { setupAgentId } = await readDraft();
+    const setupResponse = await page.request.get(`/api/agents/${setupAgentId}?companyId=${company.id}`);
+    expect(setupResponse.ok()).toBe(true);
+    const setup = await setupResponse.json();
+    expect(setup).toMatchObject({ id: setupAgentId, name: "Ada", pauseReason: "setup" });
+    const resumedSelection = { ...savedSelection, setupAgentId,
+      runner: setup.adapterType === "paperclip_runner" ? "paperclip" : "legacy" };
     const assertResumedLogin = async () => {
       await expect(page.getByRole("heading", { name: "Connect a model", exact: true })).toBeVisible({ timeout: 15_000 });
       await expect(page.getByTestId("onboarding-wizard").getByText("Ada", { exact: true })).toBeVisible();
@@ -530,7 +537,7 @@ test.describe("Onboarding wizard", () => {
       await expect(cardInstruction).toBeVisible({ timeout: 15_000 });
       await expect(authorizationLink).toBeVisible({ timeout: 15_000 });
       await expect(authorizationLink).toHaveAttribute("href", AUTHORIZATION_URL);
-      await expect.poll(readDraft).toMatchObject(savedSelection);
+      await expect.poll(readDraft).toMatchObject(resumedSelection);
       expect(startCalls, "reopening must resume the session without a second source choice").toBe(1);
       expect(hireCalls, "a pending login must not hire an agent").toBe(0);
       expect(loginSessionReads.length).toBeGreaterThan(0);

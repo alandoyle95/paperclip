@@ -2204,6 +2204,27 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     } finally { probe.mockRestore(); }
   });
 
+  it.each(["responsible_user", "shared"] as const)("drops an incompatible saved %s connection when setup changes providers", async mode => {
+    const setupId = randomUUID();
+    await db.insert(agents).values({ id: setupId, companyId, name: "Switch provider", createdByUserId: "alice",
+      adapterType: "codex_local", status: "paused", lifecycleState: "paused", pauseReason: "setup", lifecycleHolds: ["setup"],
+      runtimeConfig: { aiConnection: mode === "shared"
+        ? { provider: "openai", method: "api_key", mode, connectionId: randomUUID(), grantId: randomUUID() }
+        : { provider: "openai", method: "subscription", mode } },
+    });
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "alice", companyIds: [companyId] }; next(); });
+    app.use("/api", agentRoutes(db));
+    app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
+    const saved = await request(app).patch(`/api/agents/${setupId}`).send({ adapterType: "claude_local", runner: "legacy",
+      adapterConfig: {}, runtimeConfig: { heartbeat: { enabled: false } },
+    });
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(saved.body.runtimeConfig).not.toHaveProperty("aiConnection");
+    const [row] = await db.select().from(agents).where(eq(agents.id, setupId));
+    expect(row.runtimeConfig).not.toHaveProperty("aiConnection");
+  });
+
   it("creates and hires agents with an authorized restricted shared connection", async () => {
     const { agentRoutes } = await import("../routes/agents.js");
     await db.update(companies).set({ requireBoardApprovalForNewAgents: false }).where(eq(companies.id, companyId));

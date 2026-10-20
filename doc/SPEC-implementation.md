@@ -1327,6 +1327,8 @@ Authorized retries recover the completed record and its existing hire approval;
 they cannot replace the submitted configuration. Both setup entry points save
 configuration on the record so the roster can reopen it with the same runner.
 Resuming setup loads the server configuration before autosaving local edits.
+Its saved environment is used for login, connection verification, and final hire.
+Changing harnesses drops incompatible saved AI connections.
 Held setup records may omit provider details such as the Copilot model; final
 hire still requires a complete provider configuration. Kimi API model, protocol,
 and endpoint choices are also stored as nonsecret `adapterConfig.kimiApi` settings

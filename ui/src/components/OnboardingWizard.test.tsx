@@ -2528,6 +2528,45 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it("tests and hires in the restored setup environment instead of the instance default", async () => {
+      const setupId = "00000000-0000-4000-8000-000000000083";
+      mockEnvironmentsApi.list.mockResolvedValue([SANDBOX_ENVIRONMENT, { ...SANDBOX_ENVIRONMENT, id: "saved-environment" }]);
+      mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue({ secretId: "saved-claude", latestVersion: 1 });
+      mockAgentsApi.create.mockResolvedValueOnce({ id: setupId, companyId: "company-new", name: "Ada", role: "general",
+        adapterType: "claude_local", adapterConfig: { model: "server-model" }, runtimeConfig: {},
+        pauseReason: "setup", defaultEnvironmentId: "saved-environment" } as never);
+      const { root } = await openStep4({ adapterType: "claude_local", setupAgentId: setupId });
+      await pickSource(/Claude/);
+      expect(mockAgentsApi.testEnvironment).toHaveBeenCalledWith("company-new", "claude_local", expect.objectContaining({ environmentId: "saved-environment" }));
+      expect(mockAgentsApi.hire).toHaveBeenCalledWith("company-new", expect.objectContaining({ defaultEnvironmentId: "saved-environment" }));
+      await act(async () => root.unmount());
+    });
+
+    it("drops the restored OpenAI connection after switching to a stored Claude login", async () => {
+      mockAgentsApi.testEnvironment.mockImplementation(async (...args: unknown[]) => ({ adapterType: args[1] as string,
+        status: args[1] === "codex_local" ? "fail" as const : "pass" as const, checks: [], testedAt: new Date().toISOString() }));
+      const setupId = "00000000-0000-4000-8000-000000000084";
+      mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue({ secretId: "saved-claude", latestVersion: 1 });
+      mockAgentsApi.create.mockResolvedValueOnce({ id: setupId, companyId: "company-new", name: "Ada", role: "general",
+        adapterType: "codex_local", adapterConfig: { model: "gpt-5.4" }, runtimeConfig: {
+          aiConnection: { provider: "openai", method: "subscription", mode: "responsible_user" }, customSetting: "preserve",
+        }, pauseReason: "setup", defaultEnvironmentId: "env-sandbox-1" } as never);
+      const { root } = await openStep4({ adapterType: "codex_local", setupAgentId: setupId });
+      await pickSource(/OpenAI/);
+      const back = [...document.body.querySelectorAll("button")].find(button => button.textContent?.trim().startsWith("Back"))!;
+      await act(async () => back.click());
+      for (let i = 0; i < 10; i++) await flushReact();
+      await pickSource(/Claude/);
+      const saves = mockAgentsApi.update.mock.calls.filter(([, body]) => body.adapterType === "claude_local");
+      expect(saves.length).toBeGreaterThan(0);
+      for (const [, body] of saves) expect(body.runtimeConfig).not.toHaveProperty("aiConnection");
+      const hire = (mockAgentsApi.hire.mock.calls as unknown as Array<[string, { adapterType: string; runtimeConfig: Record<string, unknown> }]>).find(([, body]) => body.adapterType === "claude_local")?.[1];
+      expect(hire).toBeTruthy();
+      expect(hire!.runtimeConfig).toMatchObject({ customSetting: "preserve" });
+      expect(hire!.runtimeConfig).not.toHaveProperty("aiConnection");
+      await act(async () => root.unmount());
+    });
+
     it("starts setup for the new company while the previous company's creation is pending", async () => {
       let finish!: (agent: unknown) => void;
       mockAgentsApi.create.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }) as never);

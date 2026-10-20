@@ -2069,11 +2069,17 @@ function OnboardingWizardInner({
     return config;
   }
 
+  function buildSetupRuntimeConfig(heartbeatEnabled: boolean) {
+    const { aiConnection: _savedBinding, ...runtimeConfig } = restoredSetup?.companyId === createdCompanyId ? restoredSetup.runtimeConfig : {};
+    const binding = managedBindingForStep();
+    return { ...runtimeConfig, ...buildNewAgentRuntimeConfig({ heartbeatEnabled }), ...(binding ? { aiConnection: binding } : {}) };
+  }
+
   const setupSnapshot = step === 4 && setupPrepared && setupAgentId && !createdAgentId && sourceSelected && runnerDiscoveryReady && (!isCopilot || copilotModelReady) && !loading
     ? JSON.stringify({ name: agentName.trim() || AGENT_ROLE_LABELS[agentRole], appearance: agentAppearance,
       adapterType, runner, adapterConfig: buildAdapterConfig(Boolean(apiKeySecretRef.current?.binding)),
       defaultEnvironmentId: resolvedLoginEnvironmentId,
-      runtimeConfig: { ...(restoredSetup?.companyId === createdCompanyId ? restoredSetup.runtimeConfig : {}), ...buildNewAgentRuntimeConfig({ heartbeatEnabled: false }), ...(managedBindingForStep() ? { aiConnection: managedBindingForStep() } : {}) } })
+      runtimeConfig: buildSetupRuntimeConfig(false) })
     : null;
   useEffect(() => {
     if (!setupSnapshot || !setupAgentId || !createdCompanyId) return;
@@ -2107,11 +2113,6 @@ function OnboardingWizardInner({
     setAdapterEnvLoading(true);
     setAdapterEnvError(null);
     try {
-      // Probe the environment a real run would use, so the Test matches a real
-      // run. The wizard has no agent yet, so the agent-default tier is always
-      // null; resolve the instance default and the instance local default. A
-      // settings-resolution failure surfaces an error instead of a silent host
-      // probe, which would report a false result.
       let environmentList: Environment[];
       let settings: InstanceSettings;
       let managedSandboxOnly: boolean;
@@ -2146,7 +2147,7 @@ function OnboardingWizardInner({
       // resolver throws when no managed sandbox is available, which the outer
       // catch surfaces as a fail-closed error rather than a local host probe.
       const environmentId = resolveAdapterTestEnvironmentId({
-        agentDefaultEnvironmentId: null,
+        agentDefaultEnvironmentId: restoredSetup?.companyId === createdCompanyId ? restoredSetup.defaultEnvironmentId : null,
         instanceDefaultEnvironmentId: settings?.defaultEnvironmentId ?? null,
         localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environmentList),
         managedSandboxOnly,
@@ -2485,7 +2486,8 @@ function OnboardingWizardInner({
         // the chief-of-staff persona over the agent's entry instruction file.
         // The wizard no longer composes or overwrites it.
         onboardingFirstAgent: true,
-        runtimeConfig: { ...(restoredSetup?.companyId === createdCompanyId ? restoredSetup.runtimeConfig : {}), ...buildNewAgentRuntimeConfig(), ...(managedBinding ? { aiConnection: managedBinding } : {}) }
+        ...(restoredSetup?.companyId === createdCompanyId && restoredSetup.defaultEnvironmentId ? { defaultEnvironmentId: resolvedLoginEnvironmentId } : {}),
+        runtimeConfig: buildSetupRuntimeConfig(true)
       });
       if (!isCurrent()) return;
       if (hire.approval) {

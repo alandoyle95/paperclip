@@ -5474,7 +5474,7 @@ export function agentRoutes(
         && (["openai_dot", "muse"].includes(String(rawEffectiveAdapterConfig.provider)) || ["openai_dot", "muse"].includes(String(existingRunnerProvider)))) {
         await assertSelectableAdapterType(requestedAdapterType, rawEffectiveAdapterConfig);
       }
-      if (!existing.lifecycleHolds.includes("setup") && (
+      if (!(existing.lifecycleState === "paused" && existing.pauseReason === "setup") && (
         changingAdapterType ||
         (requestedAdapterType === "paperclip_runner" &&
           (requestedAdapterConfig !== null ||
@@ -5506,8 +5506,15 @@ export function agentRoutes(
         adapterConfig: patchData.adapterConfig,
       });
     }
-    if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection) requestedRuntimeConfig.aiConnection = existing.runtimeConfig.aiConnection;
     const nextAiConfig = (patchData.adapterConfig ?? existing.adapterConfig) as Record<string, unknown>;
+    if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection) {
+      const existingBinding = aiRuntimeConnectionBindingSchema.safeParse(existing.runtimeConfig.aiConnection).data;
+      if (existingBinding && agentHarnessType(existing.adapterType, existing.adapterConfig) === agentHarnessType(requestedAdapterType, nextAiConfig)
+        && (existingBinding.mode === "router" || isAiConnectionCompatible(existingBinding,
+          requestedAdapterType, nextAiConfig.model, nextAiConfig.provider, nextAiConfig.acpxAgent))) {
+        requestedRuntimeConfig.aiConnection = existingBinding;
+      }
+    }
     if (!requestedRuntimeConfig?.aiConnection && !existing.runtimeConfig.aiConnection
       && requestedAdapterType === "paperclip_runner" && nextAiConfig.provider === "acpx"
       && nextAiConfig.acpxAgent === "copilot"
@@ -5515,7 +5522,7 @@ export function agentRoutes(
       requestedRuntimeConfig = { ...(requestedRuntimeConfig ?? existing.runtimeConfig),
         aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } };
     }
-    const nextAiBinding = aiRuntimeConnectionBindingSchema.safeParse(requestedRuntimeConfig?.aiConnection ?? existing.runtimeConfig.aiConnection).data;
+    const nextAiBinding = aiRuntimeConnectionBindingSchema.safeParse(requestedRuntimeConfig ? requestedRuntimeConfig.aiConnection : existing.runtimeConfig.aiConnection).data;
     if (nextAiBinding) {
       await assertCanConfigureAgentSetup(req, existing);
       const changed = JSON.stringify(nextAiBinding) !== JSON.stringify(existing.runtimeConfig.aiConnection);
