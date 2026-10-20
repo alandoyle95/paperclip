@@ -2513,6 +2513,40 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it("loads the server setup before an older local draft can autosave over it", async () => {
+      const setupId = "00000000-0000-4000-8000-000000000082";
+      mockAdapterBuild.buildAdapterConfig.mockImplementation(values => ({ model: values?.model }));
+      mockAgentsApi.create.mockResolvedValueOnce({ id: setupId, companyId: "company-new", name: "Ada", role: "general",
+        adapterType: "codex_local", adapterConfig: { model: "server-model", customSetting: "preserve" },
+        runtimeConfig: {}, pauseReason: "setup", defaultEnvironmentId: "env-sandbox-1" } as never);
+      const { root } = await openStep4({ adapterType: "codex_local", model: "old-local-model", setupAgentId: setupId });
+      await pickSource(/OpenAI/);
+      const saves = mockAgentsApi.update.mock.calls.filter(call => call[0] === setupId);
+      expect(saves.length).toBeGreaterThan(0);
+      for (const [, body] of saves) expect(body.adapterConfig).toMatchObject({ model: "server-model", customSetting: "preserve" });
+      expect(JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!).model).toBe("server-model");
+      await act(async () => root.unmount());
+    });
+
+    it("starts setup for the new company while the previous company's creation is pending", async () => {
+      let finish!: (agent: unknown) => void;
+      mockAgentsApi.create.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }) as never);
+      const { root, queryClient } = await openStep4({ adapterType: "codex_local" });
+      await pickSource(/OpenAI/);
+      expect(mockAgentsApi.create).toHaveBeenCalledTimes(1);
+      mockCompany.companies.push({ id: "company-other", name: "Other", issuePrefix: "OTH" });
+      mockDialog.onboardingOptions = { initialStep: 4, companyId: "company-other" };
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><OnboardingWizard /></QueryClientProvider>));
+      for (let i = 0; i < 10; i++) await flushReact();
+      expect(mockAgentsApi.create).toHaveBeenCalledWith("company-other", expect.objectContaining({ setupId: expect.any(String) }));
+      const nextId = mockAgentsApi.create.mock.calls.find(call => call[0] === "company-other")![1].setupId;
+      await act(async () => finish({ id: "old-company-setup", pauseReason: "setup" }));
+      for (let i = 0; i < 5; i++) await flushReact();
+      expect(JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!)).toMatchObject({ createdCompanyId: "company-other", setupAgentId: nextId });
+      expect(document.body.textContent).not.toContain("Creating your agent…");
+      await act(async () => root.unmount());
+    });
+
     it("starts the claude_local sign-in on Connect when the signal reports no ready credential", async () => {
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
       const { root } = await openStep4({ adapterType: "claude_local" });

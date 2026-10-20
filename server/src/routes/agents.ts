@@ -4343,6 +4343,9 @@ export function agentRoutes(
         res.status(200).json({ agent: redactAgentRowForResponse(setupAgent), approval, idempotent: true });
         return;
       }
+      if (hireInput.adapterConfig && hireInput.adapterType === setupAgent.adapterType) {
+        hireInput.adapterConfig = restoreRedactedAgentEnv(hireInput.adapterConfig, setupAgent.adapterConfig);
+      }
     }
     const hiredAgentId = setupAgentId ?? randomUUID();
     const requestedHireConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
@@ -4714,7 +4717,7 @@ export function agentRoutes(
     createInput.adapterType = await assertSelectableAdapterType(createInput.adapterType, createInput.adapterConfig);
     const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertProviderTraceSettingTransition(req, createInput.runtimeConfig);
-    await assertFreshPaperclipRunnerProvider(
+    if (!setupId) await assertFreshPaperclipRunnerProvider(
       companyId,
       createInput.adapterType,
       rawCreateAdapterConfig,
@@ -5471,12 +5474,12 @@ export function agentRoutes(
         && (["openai_dot", "muse"].includes(String(rawEffectiveAdapterConfig.provider)) || ["openai_dot", "muse"].includes(String(existingRunnerProvider)))) {
         await assertSelectableAdapterType(requestedAdapterType, rawEffectiveAdapterConfig);
       }
-      if (
+      if (!existing.lifecycleHolds.includes("setup") && (
         changingAdapterType ||
         (requestedAdapterType === "paperclip_runner" &&
           (requestedAdapterConfig !== null ||
             rawEffectiveAdapterConfig.provider !== existingRunnerProvider))
-      ) {
+      )) {
         await assertFreshPaperclipRunnerProvider(
           existing.companyId,
           requestedAdapterType,

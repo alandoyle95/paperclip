@@ -22,6 +22,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import type {
   AdapterEnvironmentTestResult,
+  Agent,
   AgentRole,
   ClaudeOAuthTokenStatusResponse,
   Environment,
@@ -734,7 +735,8 @@ function OnboardingWizardInner({
   const [setupPrepared, setSetupPrepared] = useState(false);
   const [setupError, setSetupError] = useState(false);
   const [setupAttempt, setSetupAttempt] = useState(0);
-  const preparingSetup = useRef(false);
+  const preparingSetup = useRef(new Set<string>());
+  const [restoredSetup, setRestoredSetup] = useState<Agent | null>(null);
   const setupSave = useRef<Promise<unknown>>(Promise.resolve());
   const [createdCompanyGoalId, setCreatedCompanyGoalId] = useState<string | null>(
     (saved?.createdCompanyGoalId as string) ?? null
@@ -785,6 +787,16 @@ function OnboardingWizardInner({
   const managedSubscriptionProvider = managedProvider === "anthropic" || managedProvider === "openai" || managedProvider === "xai" ? managedProvider : undefined;
   function managedBindingForStep(): AiConnectionBinding | undefined {
     if (isCopilot) return copilotConnection;
+    const restoredBinding = restoredSetup?.companyId === createdCompanyId
+      && agentHarnessType(restoredSetup.adapterType, restoredSetup.adapterConfig) === agentHarnessType(adapterType, {})
+      ? restoredSetup.runtimeConfig?.aiConnection as AiConnectionBinding | undefined : undefined;
+    if (!selectedSavedKey && !apiKey.trim()) {
+      if (restoredBinding?.method === (credentialMode === "api" ? "api_key" : "subscription")) return restoredBinding;
+      const savedEnv = restoredSetup?.companyId === createdCompanyId
+        && agentHarnessType(restoredSetup.adapterType, restoredSetup.adapterConfig) === agentHarnessType(adapterType, {})
+        ? restoredSetup.adapterConfig.env as Record<string, unknown> | undefined : undefined;
+      if (savedEnv?.[credentialMode === "api" ? apiKeyEnvKeyFor(adapterType) : "CODEX_HOME"]) return undefined;
+    }
     if (credentialMode === "api") return selectedApiKey?.aiConnection ?? (
       !selectedApiKey && apiKeySecretRef.current?.companyId === createdCompanyId && apiKeySecretRef.current.envKey === apiKeyEnvKeyFor(adapterType)
         ? apiKeySecretRef.current.aiConnection : undefined);
@@ -817,6 +829,7 @@ function OnboardingWizardInner({
    * hand rather than the one before it.
    */
   function clearCompanyScopedState() {
+    setRestoredSetup(null);
     setCopilotConnection(undefined);
     setAgentAppearance(randomAgentAppearance());
     setCreatedCompanyPrefix(null);
@@ -983,7 +996,7 @@ function OnboardingWizardInner({
   const loginEnvironmentResolution = useMemo(() => {
     try {
       return { environmentId: resolveAdapterTestEnvironmentId({
-        agentDefaultEnvironmentId: null,
+        agentDefaultEnvironmentId: restoredSetup?.companyId === createdCompanyId ? restoredSetup.defaultEnvironmentId : null,
         instanceDefaultEnvironmentId: instanceSettingsForLogin?.defaultEnvironmentId ?? null,
         localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(loginEnvironmentList),
         managedSandboxOnly: experimentalSettingsForLogin?.enableManagedSandboxOnly === true,
@@ -994,6 +1007,7 @@ function OnboardingWizardInner({
       return { environmentId: null, error: error instanceof Error ? error.message : "Could not resolve the execution environment." };
     }
   }, [
+    restoredSetup, createdCompanyId,
     instanceSettingsForLogin?.defaultEnvironmentId,
     loginEnvironmentList,
     experimentalSettingsForLogin?.enableManagedSandboxOnly,
@@ -1276,17 +1290,18 @@ function OnboardingWizardInner({
 
   useEffect(() => {
     if (step !== 4 || !createdCompanyId || !sourceSelected
-      || createdAgentId || setupPrepared || preparingSetup.current || setupError) return;
-    preparingSetup.current = true;
+      || createdAgentId || setupPrepared || preparingSetup.current.has(createdCompanyId) || setupError) return;
     const companyId = createdCompanyId;
+    preparingSetup.current.add(companyId);
     const id = setupAgentId ?? crypto.randomUUID();
     setSetupAgentId(id);
+    let restoring = Boolean(setupAgentId);
     void (async () => {
       if (!setupAgentId) {
         const existing = (await agentsApi.list(companyId)).find(agent =>
           agent.status !== "terminated" && agent.name.trim().toLowerCase() === agentName.trim().toLowerCase()
           && agentHarnessType(agent.adapterType, agent.adapterConfig) === agentHarnessType(adapterType, isCopilot ? { provider: "acpx", acpxAgent: "copilot" } : {}));
-        if (existing) return existing;
+        if (existing) { restoring = true; return existing; }
       }
       return agentsApi.create(companyId, {
       setupId: id, name: agentName.trim() || AGENT_ROLE_LABELS[agentRole], appearance: agentAppearance,
@@ -1296,15 +1311,36 @@ function OnboardingWizardInner({
       });
     })().then(agent => {
       if (!stillTheSameCompany(companyId)) return;
-      if (agent.pauseReason === "setup" || agent.status === "pending_approval") setSetupAgentId(agent.id);
-      else setCreatedAgentId(agent.id);
+      if (agent.pauseReason === "setup" || agent.status === "pending_approval") {
+        setSetupAgentId(agent.id);
+        if (restoring && agent.adapterConfig) {
+          setRestoredSetup(agent);
+          setAgentName(agent.name);
+          setAgentRole(agent.role);
+          setAgentAppearance(resolveAgentAppearance(agent.appearance, agent.id));
+          const config = agent.adapterConfig;
+          setAdapterType(agentHarnessType(agent.adapterType, config) === "copilot_runtime" ? "paperclip_runner" : agentHarnessType(agent.adapterType, config) as AdapterType);
+          setModel(typeof config.model === "string" ? config.model : "");
+          setCommand(typeof config.command === "string" ? config.command : "");
+          setArgs(Array.isArray(config.args) ? config.args.join(" ") : "");
+          setUrl(typeof config.url === "string" ? config.url : "");
+          setRunner(agent.adapterType === "paperclip_runner" ? "paperclip" : "legacy");
+          const binding = agent.runtimeConfig?.aiConnection as AiConnectionBinding | undefined;
+          if (binding) setCredentialMode(binding.method === "api_key" ? "api" : "subscription");
+          else if ((config.env as Record<string, unknown> | undefined)?.[apiKeyEnvKeyFor(adapterType)]) setCredentialMode("api");
+          if (config.provider === "acpx" && config.acpxAgent === "copilot") setCopilotConnection(binding);
+        }
+      } else setCreatedAgentId(agent.id);
       setSetupPrepared(true);
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
     }).catch(cause => {
       if (!stillTheSameCompany(companyId)) return;
       setSetupError(true);
       setError(cause instanceof Error ? cause.message : "Could not create agent setup.");
-    }).finally(() => { preparingSetup.current = false; });
+    }).finally(() => {
+      preparingSetup.current.delete(companyId);
+      setSetupAttempt(attempt => attempt + 1);
+    });
   }, [step, createdCompanyId, sourceSelected, runnerDiscoveryReady, createdAgentId, setupPrepared, setupAttempt]);
 
   /**
@@ -1959,7 +1995,10 @@ function OnboardingWizardInner({
 
   function buildAdapterConfig(bindApiKey = false, setupRunner?: AgentRunner): Record<string, unknown> {
     const adapter = getUIAdapter(adapterType);
-    const config = adapter.buildAdapterConfig({
+    const savedConfig = restoredSetup?.companyId === createdCompanyId
+      && agentHarnessType(restoredSetup.adapterType, restoredSetup.adapterConfig) === agentHarnessType(adapterType, isCopilot ? { provider: "acpx", acpxAgent: "copilot" } : {})
+      ? restoredSetup.adapterConfig : {};
+    const builtConfig = adapter.buildAdapterConfig({
       ...defaultCreateValues,
       adapterType,
       runner,
@@ -1985,6 +2024,8 @@ function OnboardingWizardInner({
           ? runner === "legacy" && DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX
           : defaultCreateValues.dangerouslyBypassSandbox
     });
+    const config = { ...savedConfig, ...builtConfig,
+      ...((savedConfig.env || builtConfig.env) ? { env: { ...((savedConfig.env as object) ?? {}), ...((builtConfig.env as object) ?? {}) } } : {}) };
     if (adapterType === "claude_local" && forceUnsetAnthropicApiKey) {
       const env =
         typeof config.env === "object" &&
@@ -2012,7 +2053,9 @@ function OnboardingWizardInner({
     // present. If storing failed this stays false, and the right outcome is a
     // configuration with no credential — which the hire then blocks on — rather
     // than one that quietly falls back to embedding the value.
-    if (!managedBindingForStep() && credentialMode === "api" && (bindApiKey || selectedApiKey)) {
+    if (!managedBindingForStep() && credentialMode === "api" && (bindApiKey || selectedApiKey)
+      && (!((savedConfig.env as Record<string, unknown> | undefined)?.[apiKeyEnvKeyFor(adapterType)])
+        || selectedSavedKey || apiKey.trim())) {
       const env =
         typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
           ? { ...(config.env as Record<string, unknown>) }
@@ -2020,7 +2063,7 @@ function OnboardingWizardInner({
       env[apiKeyEnvKeyFor(adapterType)] = selectedApiKey?.binding ?? apiKeySecretRef.current?.binding;
       config.env = env;
     }
-    if (credentialMode === "subscription" && savedSubscription?.binding) {
+    if (credentialMode === "subscription" && savedSubscription?.binding && !(savedConfig.env as Record<string, unknown> | undefined)?.CODEX_HOME) {
       config.env = { ...((config.env as object) ?? {}), CODEX_HOME: savedSubscription.binding };
     }
     return config;
@@ -2030,7 +2073,7 @@ function OnboardingWizardInner({
     ? JSON.stringify({ name: agentName.trim() || AGENT_ROLE_LABELS[agentRole], appearance: agentAppearance,
       adapterType, runner, adapterConfig: buildAdapterConfig(Boolean(apiKeySecretRef.current?.binding)),
       defaultEnvironmentId: resolvedLoginEnvironmentId,
-      runtimeConfig: { ...buildNewAgentRuntimeConfig({ heartbeatEnabled: false }), ...(managedBindingForStep() ? { aiConnection: managedBindingForStep() } : {}) } })
+      runtimeConfig: { ...(restoredSetup?.companyId === createdCompanyId ? restoredSetup.runtimeConfig : {}), ...buildNewAgentRuntimeConfig({ heartbeatEnabled: false }), ...(managedBindingForStep() ? { aiConnection: managedBindingForStep() } : {}) } })
     : null;
   useEffect(() => {
     if (!setupSnapshot || !setupAgentId || !createdCompanyId) return;
@@ -2433,6 +2476,7 @@ function OnboardingWizardInner({
         name: hireName,
         appearance: agentAppearance,
         role: agentRole,
+        ...(restoredSetup?.companyId === createdCompanyId ? { reportsTo: restoredSetup.reportsTo } : {}),
         adapterType,
         adapterConfig: hireAdapterConfig,
         ...(["codex_local", "claude_local"].includes(adapterType) && runner !== "auto" ? { runner } : {}),
@@ -2441,7 +2485,7 @@ function OnboardingWizardInner({
         // the chief-of-staff persona over the agent's entry instruction file.
         // The wizard no longer composes or overwrites it.
         onboardingFirstAgent: true,
-        runtimeConfig: { ...buildNewAgentRuntimeConfig(), ...(managedBinding ? { aiConnection: managedBinding } : {}) }
+        runtimeConfig: { ...(restoredSetup?.companyId === createdCompanyId ? restoredSetup.runtimeConfig : {}), ...buildNewAgentRuntimeConfig(), ...(managedBinding ? { aiConnection: managedBinding } : {}) }
       });
       if (!isCurrent()) return;
       if (hire.approval) {

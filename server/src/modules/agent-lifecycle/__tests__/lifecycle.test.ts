@@ -181,18 +181,19 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(configProbe.body).not.toHaveProperty("adapterConfig");
     expect(configProbe.body).not.toHaveProperty("runtimeConfig");
     expect(await db.select().from(approvals).where(eq(approvals.companyId, companyId))).toHaveLength(0);
-    const saved = await request(app(board)).patch(`/api/agents/${setupId}`).send({ adapterConfig: { command: "draft-command" } });
+    const saved = await request(app(board)).patch(`/api/agents/${setupId}`).send({ adapterConfig: { command: "draft-command", env: { SETUP_LABEL: { type: "plain", value: "saved-value" } } } });
     expect(saved.status, JSON.stringify(saved.body)).toBe(200);
     await request(app({ ...board, userId: "other-creator" })).patch(`/api/agents/${setupId}`).send({ adapterConfig: { command: "foreign-command" } }).expect(403);
     const denied = await request(app({ ...board, companyIds: [], memberships: [] })).post(url).send({ ...body, setupId: randomUUID() });
     expect([403, 404]).toContain(denied.status);
     await request(app({ type: "agent", source: "agent_key", companyId, agentId: setupId })).post(url).send({ ...body, setupId: randomUUID() }).expect(403);
     const finished = await request(app(board)).post(`/api/companies/${companyId}/agent-hires`).send({
-      setupAgentId: setupId, name: "Wizard agent", adapterType: "process", adapterConfig: { command: "verified-command" },
+      setupAgentId: setupId, name: "Wizard agent", adapterType: "process", adapterConfig: { command: "verified-command", env: { SETUP_LABEL: { type: "plain", value: "***REDACTED***" } } },
     });
     expect(finished.status, JSON.stringify(finished.body)).toBe(201);
     expect(finished.body.agent).toMatchObject({ id: setupId, name: "Wizard agent", lifecycleState: "pending_approval" });
     expect(finished.body.approval.payload).toMatchObject({ agentId: setupId, adapterConfig: { command: "verified-command" } });
+    expect((await current(setupId)).adapterConfig.env).toEqual({ SETUP_LABEL: { type: "plain", value: "saved-value" } });
     expect(await db.select().from(companyMemberships).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, setupId)))).toHaveLength(1);
     const finishBody = { setupAgentId: setupId, name: "Changed on retry", adapterType: "process", adapterConfig: { command: "unapproved-command" } };
     const hireUrl = `/api/companies/${companyId}/agent-hires`;
@@ -216,6 +217,23 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(approvedRetry.status).toBe(200);
     expect(approvedRetry.body.approval.status).toBe("approved");
     expect(await db.select().from(approvals).where(eq(approvals.companyId, companyId))).toHaveLength(1);
+  });
+
+  it("holds an incomplete Copilot setup but still requires a model at final hire", async () => {
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "board", membershipRole: "owner" });
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "board", companyIds: [companyId] }; next(); });
+    app.use("/api", agentRoutes(db)); app.use(errorHandler);
+    const setupId = randomUUID();
+    const body = { name: "Copilot setup", adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "copilot" } };
+    const created = await request(app).post(`/api/companies/${companyId}/agents`).send({ ...body, setupId });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(created.body).toMatchObject({ id: setupId, pauseReason: "setup", lifecycleState: "paused" });
+    const finished = await request(app).post(`/api/companies/${companyId}/agent-hires`).send({ ...body, setupAgentId: setupId });
+    expect(finished.status, JSON.stringify(finished.body)).toBe(422);
+    expect(finished.body.details?.code ?? finished.body.code).toBe("paperclip_runner_acpx_model_required");
+    expect((await current(setupId)).lifecycleHolds).toContain("setup");
+    await request(app).post(`/api/companies/${companyId}/agents`).send(body).expect(422);
   });
 
   it("rolls back a hire and its grants when hire initialization fails", async () => {

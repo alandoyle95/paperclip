@@ -1326,6 +1326,11 @@ receive API keys, or authenticate as an agent. Its standard grants apply at hire
 Authorized retries recover the completed record and its existing hire approval;
 they cannot replace the submitted configuration. Both setup entry points save
 configuration on the record so the roster can reopen it with the same runner.
+Resuming setup loads the server configuration before autosaving local edits.
+Held setup records may omit provider details such as the Copilot model; final
+hire still requires a complete provider configuration. Kimi API model, protocol,
+and endpoint choices are also stored as nonsecret `adapterConfig.kimiApi` settings
+so they can be restored while environment values remain redacted.
 Credentials remain available for retry when a save response is lost. A confirmed
 client rejection removes only newly staged credentials from that attempt.
 Sandbox authentication and saved AI connections keep their existing flows.

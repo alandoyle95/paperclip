@@ -457,6 +457,7 @@ function Setup({
     if (usingKimiApi) {
       // --model overrides Kimi's environment-defined model. Let KIMI_MODEL_NAME win.
       delete config.model;
+      config.kimiApi = { model: kimiModel.trim(), protocol: kimiProtocol, baseUrl: kimiBaseUrl.trim() };
       config.env = {
         ...((config.env as object) ?? {}),
         KIMI_MODEL_NAME: { type: "plain", value: kimiModel.trim() },
@@ -553,6 +554,10 @@ function Setup({
     setBranch(typeof config.repoStartingRef === "string" ? config.repoStartingRef : "");
     setGatewayUrl(typeof config.apiBaseUrl === "string" ? config.apiBaseUrl : "");
     setAllowUnmeteredProvider(config.allowUnmeteredProvider === true);
+    const kimiApi = config.kimiApi as { model?: string; protocol?: string; baseUrl?: string } | undefined;
+    setKimiModel(kimiApi?.model ?? "");
+    setKimiProtocol(kimiApi?.protocol ?? "kimi");
+    setKimiBaseUrl(kimiApi?.baseUrl ?? "");
     const env = typeof config.env === "object" && config.env !== null ? config.env as Record<string, unknown> : {};
     const providerEntry = Object.entries(providerKeys).find(([, key]) => env[key]);
     if (providerEntry) setProvider(providerEntry[0]);
@@ -790,6 +795,7 @@ function Setup({
   )?.KIMI_MODEL_NAME;
   const confirmationModel =
     created?.adapterConfig?.model ||
+    (created?.adapterConfig?.kimiApi as { model?: string } | undefined)?.model ||
     (typeof createdKimiModel === "string"
       ? createdKimiModel
       : (createdKimiModel as { value?: string } | undefined)?.value) ||

@@ -743,6 +743,44 @@ describe("New agent setup", () => {
       KIMI_MODEL_API_KEY: { type: "secret_ref", secretId: "org-secret-1" },
     });
   });
+  it("restores saved Kimi API settings even when the API redacts plain environment values", async () => {
+    await render("kimi_local");
+    await fill("KIMI_MODEL_API_KEY", "kimi-test-key");
+    await fill("Kimi API model name", "kimi-for-coding");
+    await act(async () => {
+      const protocol = container.querySelector('[aria-label="Kimi API protocol"]') as HTMLSelectElement;
+      protocol.value = "openai";
+      protocol.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await fill("Kimi API base URL", "https://kimi.example.test/v1");
+    await click("Save & exit");
+    const setupId = api.create.mock.calls[0][1].setupId;
+    const get = api.get.getMockImplementation()!;
+    api.get.mockImplementation(async (...args) => {
+      const saved = await get(...args);
+      return { ...saved, adapterConfig: { ...saved.adapterConfig, env: Object.fromEntries(
+        Object.entries(saved.adapterConfig.env).map(([key, binding]) => [key,
+          (binding as { type: string }).type === "plain" ? { type: "plain", value: "***REDACTED***" } : binding]),
+      ) } };
+    });
+    await act(async () => root.render(null));
+    cache.clear();
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "kimi_local", setupAgentId: setupId });
+    await renderCurrentParams();
+    await settle();
+    expect((container.querySelector('[aria-label="Kimi API model name"]') as HTMLInputElement).value).toBe("kimi-for-coding");
+    expect((container.querySelector('[aria-label="Kimi API protocol"]') as HTMLSelectElement).value).toBe("openai");
+    await click("Save & exit");
+    expect(api.update.mock.calls.at(-1)![1].adapterConfig.env).toMatchObject({
+      KIMI_MODEL_NAME: { type: "plain", value: "kimi-for-coding" },
+      KIMI_MODEL_PROVIDER_TYPE: { type: "plain", value: "openai" },
+      KIMI_MODEL_BASE_URL: { type: "plain", value: "https://kimi.example.test/v1" },
+    });
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].adapterConfig.env).toMatchObject({ KIMI_MODEL_NAME: { type: "plain", value: "kimi-for-coding" } });
+    expect(secrets.create).toHaveBeenCalledTimes(1);
+  });
+
   it("configures Hermes Gateway URL and its top-level secret reference", async () => {
     await render("hermes_gateway");
     expect(container.querySelector('[aria-label="Model"]')).toBeNull();
