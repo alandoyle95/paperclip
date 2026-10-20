@@ -286,7 +286,6 @@ export interface RunnerE2EBillingSummary {
 
 export interface RunnerE2EResult {
   schema: "paperclip.runner-e2e.result/v1" | "paperclip.runner-e2e.result/v2";
-  /** Supervisor-owned identity, stable across copies of this attempt's artifacts. */
   accountingIdentity?: { campaignId: string; attemptId: string };
   executionId: string;
   suiteId?: string;
@@ -395,7 +394,6 @@ export interface RunnerE2EAggregateBillingSummary {
   testsWithCompleteBilling: number;
 }
 
-/** Numeric receipts retained independently of the result chosen for grading. */
 export interface RunnerE2EAttemptReceipt {
   id: string;
   executionId: string;
@@ -410,12 +408,9 @@ export interface RunnerE2EAttemptReceipt {
 
 export interface RunnerE2ECampaignAccounting {
   version: 1;
-  /** Legacy bundles contain only the selected result and cannot recover retry spend. */
   scope: "retained_attempts" | "selected_results";
   attempts: RunnerE2EAttemptReceipt[];
-  /** Earlier attempt numbers or selected executions without a retained receipt. */
   missingAttempts: number;
-  /** Unscoped or different-campaign artifacts deliberately excluded from totals. */
   excludedArtifacts: number;
 }
 

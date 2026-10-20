@@ -89,8 +89,6 @@ export function buildRunnerCampaign(input: {
     const receipts = accounting.attempts.filter(attempt => ids.has(attempt.executionId));
     const billing = aggregateBillingSummaries([
       ...receipts,
-      // Preserve unavailable coverage for missing artifacts instead of turning
-      // a campaign that never started into a measured zero-dollar campaign.
       ...selectedResults.filter(result => !receipts.some(attempt => attempt.executionId === result.executionId))
         .map(result => ({ executionId: result.executionId, billing: summarizeExecutionBilling(result) })),
     ]);

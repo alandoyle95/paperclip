@@ -307,8 +307,6 @@ export async function selectRerunArtifacts(input: SelectRerunArtifactsInput) {
     });
     selections.push({ executionId, workflowAttempt, artifactName });
   }
-  // The report needs proof that an older campaign identity was intentionally
-  // carried forward by the trusted job selector, not found in a mixed directory.
   await mkdir(input.selectedRoot, { recursive: true });
   await writeFile(path.join(input.selectedRoot, "selected-artifacts.json"), JSON.stringify({
     version: 1, workflowRunId: runId, workflowRunAttempt: currentAttempt,

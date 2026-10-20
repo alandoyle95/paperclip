@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { summarizeExecutionBilling } from "./billing.js";
 import type { RunnerE2EAttemptReceipt, RunnerE2ECampaignAccounting, RunnerE2EResult } from "./types.js";
 
-/** Only the trusted artifact selector may carry an earlier workflow cell forward. */
 export function isSelectedCarryForward(input: {
   requestedCampaignId: string; result: RunnerE2EResult; relativeResultPath: string; selection: unknown;
 }): boolean {
@@ -27,7 +26,6 @@ export function isSelectedCarryForward(input: {
   });
 }
 
-/** Legacy CI artifacts can be grouped by run URL; unscoped local runs cannot. */
 function scope(result: RunnerE2EResult): string | undefined {
   return result.accountingIdentity?.campaignId ?? result.source?.workflowRunUrl ?? undefined;
 }
@@ -44,8 +42,6 @@ export function retainedCampaignAttempts(
 }
 
 function receipt(result: RunnerE2EResult): RunnerE2EAttemptReceipt {
-  // finishedAt is intentionally absent: a later supervisor cleanup update is
-  // another observation of this attempt, not another chargeable attempt.
   const identity = [scope(result) ?? null, result.executionId,
     result.accountingIdentity?.attemptId ?? [result.attempt, result.startedAt]];
   return {
