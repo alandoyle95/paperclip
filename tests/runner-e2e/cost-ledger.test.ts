@@ -43,7 +43,6 @@ it("durably caps attempts including zero-request failures and rejects unadmitted
   const { file, ledger } = await fixture({ maxAttemptsPerExecution: 2 });
   await expect(ledger.reserve("request", identity, "0.1")).rejects.toThrow("no admitted attempt");
   await ledger.admitAttempt(identity.executionId, "attempt-1");
-  // The worker dies before any model request; the admission must still count.
   await ledger.close();
   const resumed = await openEvalCostLedger(file, cap);
   try {

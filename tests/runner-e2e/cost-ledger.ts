@@ -10,7 +10,6 @@ export interface EvalSpendLimits {
   deadlineAt: string;
   maxRequests: number;
   maxConcurrent: number;
-  /** Absent only in older or request-only journals. Operations always sets it. */
   maxAttemptsPerExecution?: number;
 }
 export interface EvalChargeIdentity {

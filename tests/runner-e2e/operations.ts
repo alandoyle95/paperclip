@@ -73,8 +73,6 @@ export async function openEvalOperations(file: string, executions: readonly Matr
         endpointName: provider === "openai" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY",
         apiKey: env[manifest.route === "braintrust" ? "BRAINTRUST_API_KEY" : execution.profile.credential] ?? "" };
       if (!route.apiKey) throw new Error("Missing eval gateway upstream credential");
-      // Persist even attempts that fail before their first provider request.
-      // A restart or a new output campaign must not replenish the allowance.
       await ledger.admitAttempt(execution.id, attemptId);
       const gateway = await startEvalGateway({ ledger, route,
         identity: { executionId: execution.id, attemptId, phase: "agent" }, deadlineAt: Date.parse(manifest.limits.deadlineAt),
