@@ -77,11 +77,21 @@ or recovery-resolution authority. The
 cover the driver boundary with simulated transport; live hosted recovery remains
 separate qualification.
 
+Ordinary task Retry uses `POST /api/issues/{id}/retry`. This is authenticated
+board task-mutation authority, not agent retry authority. The only request
+fields are a UUID idempotency key and observed source run (or null). It accepts
+no paths, stop attestations or client-selected strategy. The source-scoped
+exact-run and maintenance APIs retain their existing contracts. Connected-chat
+Retry reuses chat admission and its external identity. See the
+[durable contract](../../doc/task-recovery.md). Local PostgreSQL and assembled
+browser qualification do not establish hosted agent access or recovery.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
 
 - `POST /api/issues/{id}/recovery-actions/resolve`.
+- `POST /api/issues/{id}/retry` (board only).
 
 Agent access: `partial` — Eligible agent REST / native `call_api` / CLI under
 source-bound recovery authority.
