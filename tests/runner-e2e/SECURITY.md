@@ -426,3 +426,13 @@ only numeric counts, closed collection statuses, and SHA-256 fingerprints for
 review grouping. Public reports never copy feedback bodies, previews, tool
 arguments, or free-form collection errors. Collecting feedback performs no new
 model call and does not forward it to an external service.
+
+Feedback capture retains at most 1,000 full entries and 8 MiB of serialized
+entries/invocations per attempt. Event inspection stops at 10,000 events or
+16 MiB of serialized event data. Limits produce partial collection and a closed
+`evidence_limit_reached` diagnostic; omitted evidence is never reported as absent.
+Checkpoints occur after the first page, at geometric data growth, and at stage
+completion rather than after each entry/run. Persistence shares the collection
+deadline and receives an abort signal. The fixture writes an abortable temporary
+snapshot before replacing the last complete checkpoint, so a stalled write does
+not overwrite earlier evidence with a partially written JSON file.

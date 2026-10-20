@@ -28,9 +28,13 @@ export interface FeedbackEvidence {
   companyId: string;
   entries: AgentCommentaryDetail[];
   invocations: FeedbackInvocation[];
-  diagnostics: Array<"feedback_read_failed" | "feedback_detail_failed" | "feedback_pagination_incomplete" | "run_read_failed" | "run_detail_failed" | "run_limit_reached" | "events_read_failed" | "deadline_reached">;
+  diagnostics: Array<"feedback_read_failed" | "feedback_detail_failed" | "feedback_pagination_incomplete" | "run_read_failed" | "run_detail_failed" | "run_limit_reached" | "events_read_failed" | "deadline_reached" | "evidence_limit_reached">;
   summary: FeedbackSummary;
 }
+
+export const FEEDBACK_COLLECTION_LIMITS = {
+  entries: 1000, retainedBytes: 8 * 1024 * 1024, eventBytes: 16 * 1024 * 1024, events: 10_000,
+} as const;
 
 export function emptyFeedbackSummary(): FeedbackSummary {
   return { version: 1, collection: "not_started", invocationCollection: "not_started", toolAvailability: "unknown",
@@ -101,37 +105,59 @@ export function summarizeCampaignFeedback(attempts: readonly { feedback?: Feedba
 export async function collectAttemptFeedback(input: {
   api: Pick<RunnerApi, "get">;
   companyId: string;
-  persist: (evidence: FeedbackEvidence) => Promise<void>;
+  persist: (evidence: FeedbackEvidence, signal: AbortSignal) => Promise<void>;
   deadlineAt?: number;
 }): Promise<FeedbackSummary> {
   const deadlineAt = input.deadlineAt ?? Date.now() + 30_000;
   const summary = emptyFeedbackSummary();
   const evidence: FeedbackEvidence = { version: 1, companyId: input.companyId, entries: [], invocations: [], diagnostics: [], summary };
+  let retainedBytes = 0, checkpointBytes = 0, eventBytes = 0, eventCount = 0;
+  const diagnose = (code: FeedbackEvidence["diagnostics"][number]) => { if (!evidence.diagnostics.includes(code)) evidence.diagnostics.push(code); };
   const get = <T>(url: string) => {
     const remaining = deadlineAt - Date.now();
     if (remaining <= 0) throw new Error("Feedback collection deadline reached");
     return input.api.get<T>(url, { timeout: Math.min(5_000, remaining) });
   };
-  const persist = async () => {
+  const persist = async (force = false) => {
     summary.bodiesCollected = evidence.entries.length;
-    summary.review = feedbackReview(evidence.entries);
     summary.invocations = { completed: 0, failed: 0, unknown: 0 };
     for (const invocation of evidence.invocations) summary.invocations[invocation.outcome]++;
     summary.toolAvailability = evidence.invocations.length ? "observed" : "unknown";
-    await input.persist(evidence);
+    if (Date.now() >= deadlineAt) { diagnose("deadline_reached"); return false; }
+    if (!force && (!retainedBytes || checkpointBytes > 0 && retainedBytes < Math.max(1024 * 1024, checkpointBytes * 2))) return true;
+    summary.review = feedbackReview(evidence.entries);
+    const remaining = deadlineAt - Date.now();
+    if (remaining <= 0) { diagnose("deadline_reached"); return false; }
+    const abort = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        new Promise<never>((_resolve, reject) => { timer = setTimeout(() => {
+          abort.abort(); reject(new Error("Feedback persistence deadline reached"));
+        }, remaining); }),
+        input.persist(evidence, abort.signal),
+      ]);
+      if (Date.now() >= deadlineAt) { abort.abort(); diagnose("deadline_reached"); return false; }
+      checkpointBytes = retainedBytes;
+    } finally { clearTimeout(timer); }
+    return true;
   };
-  await persist();
+  if (!await persist(true)) {
+    summary.collection = "unavailable";
+    summary.invocationCollection = "unavailable";
+    return summary;
+  }
   const seen = new Set<string>();
   let expectedTotal: number | undefined;
   let detailsFailed = false;
-  for (let offset = 0; offset < 10_000; offset += 100) {
+  feedbackPages: for (let offset = 0; offset < FEEDBACK_COLLECTION_LIMITS.entries; offset += 100) {
     let page: AgentCommentaryPage;
     try {
       page = await get<AgentCommentaryPage>(`/api/companies/${input.companyId}/agent-commentary?limit=100&offset=${offset}`);
       if (!Array.isArray(page.items) || !Number.isSafeInteger(page.total) || page.total < 0 || page.items.length > 100) throw new Error("Invalid feedback page");
     } catch {
       summary.collection = seen.size ? "partial" : "unavailable";
-      evidence.diagnostics.push("feedback_read_failed");
+      diagnose("feedback_read_failed");
       break;
     }
     expectedTotal ??= page.total;
@@ -145,33 +171,36 @@ export async function collectAttemptFeedback(input: {
       try {
         const detail = await get<AgentCommentaryDetail>(`/api/companies/${input.companyId}/agent-commentary/${encodeURIComponent(entry.id)}`);
         if (detail.id !== entry.id || detail.kind !== entry.kind || detail.runId !== entry.runId || typeof detail.body !== "string") throw new Error("Invalid feedback detail");
+        const bytes = Buffer.byteLength(JSON.stringify(detail)) + 1;
+        if (retainedBytes + bytes + 4 > FEEDBACK_COLLECTION_LIMITS.retainedBytes) { diagnose("evidence_limit_reached"); break feedbackPages; }
         evidence.entries.push(detail);
+        retainedBytes += bytes;
       } catch {
         detailsFailed = true;
-        evidence.diagnostics.push("feedback_detail_failed");
+        diagnose("feedback_detail_failed");
       }
-      await persist();
     }
+    if (!await persist()) break;
     if (offset + page.items.length >= page.total || page.items.length < 100) {
       if (seen.size === page.total && expectedTotal === page.total && !detailsFailed) summary.collection = "complete";
-      else evidence.diagnostics.push("feedback_pagination_incomplete");
+      else diagnose("feedback_pagination_incomplete");
       break;
     }
-    if (offset === 9_900) evidence.diagnostics.push("feedback_pagination_incomplete");
+    if (offset + 100 >= FEEDBACK_COLLECTION_LIMITS.entries) diagnose("evidence_limit_reached");
   }
-  await persist();
+  if (!await persist(true)) summary.collection = evidence.entries.length ? "partial" : "unavailable";
   let runs: Array<{ id: string; status?: string }>;
   try {
     runs = await get(`/api/companies/${input.companyId}/heartbeat-runs?limit=1000`);
-    if (!Array.isArray(runs) || runs.some(run => typeof run.id !== "string")) throw new Error("Invalid runs");
+    if (!Array.isArray(runs) || runs.length > 1000 || runs.some(run => typeof run.id !== "string")) throw new Error("Invalid runs");
   } catch {
     summary.invocationCollection = "unavailable";
-    evidence.diagnostics.push("run_read_failed");
-    await persist();
+    diagnose("run_read_failed");
+    await persist(true);
     return summary;
   }
   summary.invocationCollection = runs.length < 1000 ? "complete" : "partial";
-  if (runs.length >= 1000) evidence.diagnostics.push("run_limit_reached");
+  if (runs.length >= 1000) diagnose("run_limit_reached");
   for (const listed of runs) {
     let run: { id: string; status?: string; runtimeMode?: string } = listed;
     try {
@@ -181,7 +210,7 @@ export async function collectAttemptFeedback(input: {
     } catch {
       summary.invocationCollection = "partial";
       summary.collection = summary.collection === "complete" ? "partial" : summary.collection;
-      evidence.diagnostics.push("run_detail_failed");
+      diagnose("run_detail_failed");
     }
     if (!["succeeded", "interrupted", "failed", "cancelled", "timed_out"].includes(run.status ?? "")) {
       summary.collection = summary.collection === "complete" ? "partial" : summary.collection;
@@ -192,29 +221,37 @@ export async function collectAttemptFeedback(input: {
     let afterSeq = 0;
     try {
       for (let pageNumber = 0; pageNumber < 100; pageNumber++) {
-        const page = await get<Row[]>(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=1000`);
-        if (!Array.isArray(page) || page.length > 1000) throw new Error("Invalid events");
+        const page = await get<Row[]>(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=100`);
+        if (!Array.isArray(page) || page.length > 100) throw new Error("Invalid events");
         for (const event of page) {
           if (!Number.isSafeInteger(event.seq) || Number(event.seq) <= afterSeq) throw new Error("Invalid event sequence");
+          const bytes = Buffer.byteLength(JSON.stringify(event));
+          if (eventCount >= FEEDBACK_COLLECTION_LIMITS.events || eventBytes + bytes > FEEDBACK_COLLECTION_LIMITS.eventBytes) {
+            diagnose("evidence_limit_reached"); throw new Error("Feedback event limit reached");
+          }
+          eventCount++; eventBytes += bytes;
           afterSeq = Number(event.seq);
           events.push(event);
         }
-        if (page.length < 1000) break;
-        if (pageNumber === 99) throw new Error("Event limit reached");
+        if (page.length < 100) break;
+        if (pageNumber === 99) { diagnose("evidence_limit_reached"); throw new Error("Event limit reached"); }
       }
       summary.runsInspected++;
     } catch {
       summary.invocationCollection = "partial";
-      evidence.diagnostics.push("events_read_failed");
+      diagnose("events_read_failed");
     }
-    evidence.invocations.push(...observeFeedbackInvocations(run.id, events));
-    await persist();
-    if (Date.now() >= deadlineAt) {
+    for (const invocation of observeFeedbackInvocations(run.id, events)) {
+      const bytes = Buffer.byteLength(JSON.stringify(invocation)) + 1;
+      if (retainedBytes + bytes + 4 > FEEDBACK_COLLECTION_LIMITS.retainedBytes) { diagnose("evidence_limit_reached"); break; }
+      retainedBytes += bytes;
+      evidence.invocations.push(invocation);
+    }
+    if (!await persist() || evidence.diagnostics.includes("evidence_limit_reached")) {
       summary.invocationCollection = "partial";
-      evidence.diagnostics.push("deadline_reached");
       break;
     }
   }
-  await persist();
+  if (!await persist(true)) summary.invocationCollection = "partial";
   return summary;
 }

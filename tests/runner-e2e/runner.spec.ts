@@ -351,7 +351,9 @@ async function writeSanitizedJson(
   name: string,
   value: unknown,
   secrets: readonly string[],
+  signal?: AbortSignal,
 ) {
+  signal?.throwIfAborted();
   const raw = `${JSON.stringify(value)}\n`;
   // Public API payloads may contain harmless provider-shaped fixtures or
   // opaque generated tokens. Reject exact campaign credentials before writing,
@@ -360,8 +362,9 @@ async function writeSanitizedJson(
   const safe = `${JSON.stringify(sanitizeJson(value, secrets), null, 2)}\n`;
   const leak = findSecretLeakInJsonValues(JSON.parse(safe), secrets);
   if (leak) throw new Error(`Secret leak in ${name}: ${leak}`);
+  signal?.throwIfAborted();
   await mkdir(directory, { recursive: true });
-  await writeFile(path.join(directory, name), safe, "utf8");
+  await writeFile(path.join(directory, name), safe, { encoding: "utf8", signal });
 }
 
 async function submitTaskRevision(page: Page, body: string): Promise<number> {
@@ -3080,9 +3083,11 @@ for (const execution of executions) {
             teardown: async () => {
               try {
                 feedback = await collectAttemptFeedback({ api, companyId: fixtures!.company.id,
-                  persist: async evidence => {
+                  persist: async (evidence, signal) => {
                     feedback = structuredClone(evidence.summary);
-                    await writeSanitizedJson(snapshotsDir, "agent-feedback.json", evidence, secrets);
+                    await writeSanitizedJson(snapshotsDir, "agent-feedback.pending.json", evidence, secrets, signal);
+                    signal.throwIfAborted();
+                    await rename(path.join(snapshotsDir, "agent-feedback.pending.json"), path.join(snapshotsDir, "agent-feedback.json"));
                   },
                 });
               } catch {

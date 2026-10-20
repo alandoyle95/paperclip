@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import type { AgentCommentaryDetail } from "../../packages/shared/src/validators/agent-commentary.js";
 import type { RunnerApi } from "./api.js";
-import { collectAttemptFeedback, emptyFeedbackSummary, feedbackReview, observeFeedbackInvocations, summarizeCampaignFeedback, type FeedbackEvidence } from "./feedback.js";
+import { collectAttemptFeedback, emptyFeedbackSummary, feedbackReview, observeFeedbackInvocations, summarizeCampaignFeedback, FEEDBACK_COLLECTION_LIMITS, type FeedbackEvidence } from "./feedback.js";
 import { runCleanupWithObservers } from "./cleanup-verification.js";
 import { isHistoricalBundlePathAllowed } from "./history-publish.js";
 import { canonicalProviderEventsFromOpenCodePart } from "../../packages/paperclip-runner/src/provider-events.js";
@@ -30,7 +30,7 @@ it("collects full paginated company feedback, including feedback outside the sel
   expect(summary).toMatchObject({ collection: "complete", complaints: 101, bodiesCollected: 101, toolAvailability: "unknown" });
   expect(summary.review).toEqual([{ fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/), occurrences: 101, kind: "complaint", disposition: "needs_investigation" }]);
   expect(checkpoints.at(-1)!.entries[100]!.body).toHaveLength(300);
-  expect(checkpoints.some(value => value.entries.length === 1)).toBe(true);
+  expect(checkpoints.some(value => value.entries.length === 100)).toBe(true);
   expect(JSON.stringify(summary)).not.toContain("aaa");
 });
 
@@ -124,7 +124,7 @@ it("bounds collection by a deadline and retains content-free diagnostics", async
   });
   expect(requests).toBe(0);
   expect(summary.collection).toBe("unavailable");
-  expect(JSON.stringify(last)).not.toContain("secret response");
+  expect(last).toBeUndefined();
 });
 
 it("groups identical feedback for one review without conflating kinds", () => {
@@ -180,4 +180,74 @@ it("retains OpenCode feedback whose first observed update is running or terminal
     { runId: "run", callId: "failed", kind: "complaint", outcome: "failed" },
     { runId: "run", callId: "completed", kind: "suggestion", outcome: "completed" },
   ]);
+});
+
+it("bounds retained bytes and checkpoint writes for maximum-size feedback bodies", async () => {
+  const body = "x".repeat(524_288);
+  let detailReads = 0, writtenBytes = 0, writes = 0, retained: FeedbackEvidence | undefined;
+  const summary = await collectAttemptFeedback({ companyId: "company",
+    persist: async evidence => { writes++; writtenBytes += Buffer.byteLength(JSON.stringify(evidence, null, 2)); retained = structuredClone(evidence); },
+    api: api(url => {
+      if (url.includes("agent-commentary?")) return { items: Array.from({ length: 100 }, (_, index) => entry(String(index), "preview")), total: 10_000 };
+      if (url.includes("agent-commentary/")) { detailReads++; return entry(url.split("/").at(-1)!, body); }
+      return [];
+    }),
+  });
+  expect(detailReads).toBeLessThanOrEqual(16);
+  expect(writes).toBeLessThanOrEqual(4);
+  expect(writtenBytes).toBeLessThan(3 * FEEDBACK_COLLECTION_LIMITS.retainedBytes);
+  expect(Buffer.byteLength(JSON.stringify(retained!.entries))).toBeLessThanOrEqual(FEEDBACK_COLLECTION_LIMITS.retainedBytes);
+  expect(summary.collection).toBe("partial");
+  expect(retained!.diagnostics).toContain("evidence_limit_reached");
+  expect(retained!.entries.every(item => item.body === body)).toBe(true);
+});
+
+it("caps entry count and stops requesting further feedback pages", async () => {
+  let pages = 0, retained: FeedbackEvidence | undefined;
+  const summary = await collectAttemptFeedback({ companyId: "company", persist: async evidence => { retained = structuredClone(evidence); },
+    api: api(url => {
+      if (url.includes("agent-commentary?")) {
+        const offset = Number(new URL(url, "http://fixture").searchParams.get("offset")); pages++;
+        return { items: Array.from({ length: 100 }, (_, index) => entry(String(offset + index))), total: 2000 };
+      }
+      if (url.includes("agent-commentary/")) return entry(url.split("/").at(-1)!);
+      return [];
+    }),
+  });
+  expect(pages).toBe(10);
+  expect(summary.bodiesCollected).toBe(FEEDBACK_COLLECTION_LIMITS.entries);
+  expect(summary.collection).toBe("partial");
+  expect(retained!.diagnostics).toContain("evidence_limit_reached");
+});
+
+it("aborts stalled evidence persistence at the collection deadline", async () => {
+  let signal: AbortSignal | undefined, reads = 0;
+  await expect(collectAttemptFeedback({ companyId: "company", deadlineAt: Date.now() + 50,
+    persist: async (_evidence, currentSignal) => { signal = currentSignal; await new Promise<void>(() => {}); },
+    api: api(() => { reads++; return []; }),
+  })).rejects.toThrow("Feedback persistence deadline reached");
+  expect(signal?.aborted).toBe(true);
+  expect(reads).toBe(0);
+});
+
+it("bounds raw event inspection while retaining the observed feedback receipt prefix", async () => {
+  let pages = 0, retained: FeedbackEvidence | undefined;
+  const summary = await collectAttemptFeedback({ companyId: "company", persist: async evidence => { retained = structuredClone(evidence); },
+    api: api(url => {
+      if (url.includes("agent-commentary?")) return { items: [], total: 0 };
+      if (url.includes("/events?")) {
+        pages++;
+        return Array.from({ length: 100 }, (_, index) => event(index + 1, "tool.execution.started", {
+          executionId: `call-${index}`, name: "submit_complaint", input: "x".repeat(200_000),
+        }));
+      }
+      if (url === "/api/heartbeat-runs/run") return { id: "run", status: "succeeded", runtimeMode: "native" };
+      return [{ id: "run", status: "succeeded" }];
+    }),
+  });
+  expect(pages).toBe(1);
+  expect(summary.invocationCollection).toBe("partial");
+  expect(summary.invocations.unknown).toBeGreaterThan(0);
+  expect(summary.invocations.unknown).toBeLessThan(100);
+  expect(retained!.diagnostics).toContain("evidence_limit_reached");
 });
