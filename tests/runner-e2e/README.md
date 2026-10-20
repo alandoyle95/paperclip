@@ -2626,11 +2626,32 @@ traces. A killed worker can leave a pending receipt, not a claimed successful ex
 `accepted` means the OTLP receiver accepted the batch; it does not establish that
 Braintrust indexed it or that native agent spans arrived. Search the project for
 `paperclip.eval.attempt_id` and its trace ID, then verify native records using the
-company ID and `paperclip.eval.run_ids`. Native spans currently have their own
-trace context; they are correlated by these identities, not automatically children
-of the orchestration span. Orchestration spans intentionally omit model usage and
-cost metrics to avoid duplicating provider-span charges. The separate provider
-connection suite and standalone judges do not yet use this attempt exporter.
+company ID and `paperclip.eval.run_ids`. The disposable company uses the custom
+OTLP destination at `https://api.braintrust.dev/otel` with a private `x-bt-parent`
+header containing the exported attempt parent. Braintrust attaches independent
+native trace roots beneath that attempt; native children keep their own hierarchy.
+This uses the existing company observability API without changing production
+trace parentage or enabling export on other companies.
+
+The parent encoder uses Braintrust's V4 project-log wire format with JSON identity
+fields (version 4, project-log type 2, zero compressed fields). Its fixture was
+round-tripped through the public `SpanComponentsV4.fromStr` export in
+`braintrust/util` 3.38.0. The implementation is specified in the
+[official SDK source](https://github.com/braintrustdata/braintrust-sdk-javascript/blob/403ae94fb3f1916a101d8d84de4c4871e4ae3bec/js/util/span_identifier_v4.ts).
+A model-free live probe verified the indexed child's `root_span_id` and
+`span_parents` in Braintrust; a native-agent run must separately qualify the path.
+The parent contains identifiers only and is installed through the sensitive
+credential-header path, outside browser evidence.
+
+Attempt spans include suite ID and definition hash, profile, case, configured
+provider/model, source revision (or explicit `unknown`), and the runner-spec grader
+path. The source revision identifies that grader's implementation. This exporter
+records the worker outcome before supervisor packaging; it does not yet certify
+the final evidence-package or outer-cleanup outcome. Orchestration spans omit model
+usage and cost metrics. Gateway model logging remains a separate observation lane;
+its model costs must not be added to native costs without a verified request join.
+The separate provider connection suite and standalone judges do not yet use this
+attempt exporter.
 
 ### Bounded local gateway pilot
 

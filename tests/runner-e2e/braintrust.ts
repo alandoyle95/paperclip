@@ -18,6 +18,9 @@ type Attributes = Record<string, string | number | boolean | string[]>;
 type Phase = "setup" | "execution" | "feedback" | "cleanup";
 interface PhaseSpan { name: Phase; spanId: string; start: number; end?: number; failed?: boolean }
 export interface EvalTraceIdentity { campaignId: string; attemptId: string; executionId: string; provider: string; model: string; environment: string }
+export interface EvalTraceProvenance {
+  suiteId: string; suiteDefinitionHash: string; profileId: string; caseId: string; sourceRevision: string | null;
+}
 export interface EvalTraceReceipt {
   projectId: string; traceId: string; spanId: string;
   status: "pending" | "accepted" | "failed";
@@ -27,14 +30,26 @@ export interface EvalTraceReceipt {
 }
 const require = createRequire(new URL("../../server/package.json", import.meta.url));
 const time = (ms: number): [number, number] => [Math.floor(ms / 1000), (ms % 1000) * 1_000_000];
+const braintrustOtlpEndpoint = "https://api.braintrust.dev/otel";
+
+export function exportBraintrustAttemptParent(receipt: Pick<EvalTraceReceipt, "projectId" | "spanId" | "traceId">): string {
+  if (!uuid.test(receipt.projectId) || !/^[0-9a-f]{16}$/.test(receipt.spanId) || !/^[0-9a-f]{32}$/.test(receipt.traceId)
+      || /^0+$/.test(receipt.spanId) || /^0+$/.test(receipt.traceId)) throw new Error("Invalid eval trace parent identity");
+  return Buffer.concat([Buffer.from([4, 2, 0]), Buffer.from(JSON.stringify({
+    object_id: receipt.projectId, row_id: receipt.spanId, span_id: receipt.spanId, root_span_id: receipt.traceId,
+  }))]).toString("base64");
+}
 
 export class EvalAttemptTrace {
   private readonly startedAt = Date.now();
   private readonly phases: PhaseSpan[] = [];
   private active?: PhaseSpan;
   private readonly receipt: EvalTraceReceipt;
-  constructor(private readonly config: EvalBraintrustConfig, private readonly identity: EvalTraceIdentity) {
+  constructor(private readonly config: EvalBraintrustConfig, private readonly identity: EvalTraceIdentity, private readonly provenance?: EvalTraceProvenance) {
     if (Object.values(identity).some(value => !value || value.length > 512 || /[\r\n]/.test(value))) throw new Error("Invalid eval trace identity");
+    if (provenance && (Object.values(provenance).some(value => value !== null && (!value || value.length > 512 || /[\r\n]/.test(value)))
+        || !/^[0-9a-f]{64}$/.test(provenance.suiteDefinitionHash)
+        || provenance.sourceRevision !== null && !/^[0-9a-f]{40}$/.test(provenance.sourceRevision))) throw new Error("Invalid eval trace provenance");
     this.receipt = { projectId: config.projectId, traceId: randomBytes(16).toString("hex"), spanId: randomBytes(8).toString("hex"),
       status: "pending", verification: "unverified", nativeConfiguration: "not_started" };
   }
@@ -51,15 +66,18 @@ export class EvalAttemptTrace {
     if (!uuid.test(companyId)) throw new Error("Invalid eval trace company identity");
     this.receipt.companyId = companyId;
     try {
-      const saved = await api.putSensitive<{ settings: { revision: string; enabled: boolean; credentialsConfigured: boolean; destination: { provider: string; projectId?: string } } }>(
+      const saved = await api.putSensitive<{ settings: { revision: string; enabled: boolean; credentialsConfigured: boolean; destination: { provider: string; endpointBaseUrl?: string } } }>(
         `/api/companies/${companyId}/observability`, {
           expectedRevision: null, enabled: true,
-          destination: { provider: "braintrust", projectId: this.config.projectId },
-          credentials: { mode: "replace", apiKey: this.config.apiKey },
+          destination: { provider: "otlp", endpointBaseUrl: braintrustOtlpEndpoint },
+          credentials: { mode: "replace", headers: [
+            { name: "authorization", value: `Bearer ${this.config.apiKey}` },
+            { name: "x-bt-parent", value: exportBraintrustAttemptParent(this.receipt) },
+          ] },
           capture: { userPrompts: true, assistantResponses: true, toolDetails: true, toolContent: true },
         });
       if (!saved.settings?.enabled || !saved.settings.credentialsConfigured || !uuid.test(saved.settings.revision)
-          || saved.settings.destination.provider !== "braintrust" || saved.settings.destination.projectId !== this.config.projectId) throw new Error("Unexpected observability setting");
+          || saved.settings.destination.provider !== "otlp" || saved.settings.destination.endpointBaseUrl !== braintrustOtlpEndpoint) throw new Error("Unexpected observability setting");
       this.receipt.revision = saved.settings.revision;
       this.receipt.nativeConfiguration = "configured";
     } catch {
@@ -80,6 +98,12 @@ export class EvalAttemptTrace {
       "paperclip.eval.model": this.identity.model, "paperclip.eval.environment": this.identity.environment,
       "paperclip.eval.cleanup": input.cleanup, "paperclip.eval.run_ids": input.runIds,
       "paperclip.eval.feedback.complaints": input.complaints, "paperclip.eval.feedback.suggestions": input.suggestions,
+      ...(this.provenance ? {
+        "paperclip.eval.suite_id": this.provenance.suiteId, "paperclip.eval.suite_definition_hash": this.provenance.suiteDefinitionHash,
+        "paperclip.eval.profile_id": this.provenance.profileId, "paperclip.eval.case_id": this.provenance.caseId,
+        "paperclip.eval.source_revision": this.provenance.sourceRevision ?? "unknown",
+        "paperclip.eval.grader": "tests/runner-e2e/runner.spec.ts",
+      } : {}),
       ...(this.receipt.companyId ? { "paperclip.company.id": this.receipt.companyId } : {}),
     };
     const resource = resourceFromAttributes({ "service.name": "paperclip-evals" });
@@ -97,7 +121,7 @@ export class EvalAttemptTrace {
         ...this.phases.map(phase => span(`paperclip.eval.${phase.name}`, phase.spanId, phase.start, phase.end!, phase.failed ?? false, true)),
       ]);
       if (!body) throw new Error("serialization");
-      const response = await transport("https://api.braintrust.dev/otel/v1/traces", {
+      const response = await transport(`${braintrustOtlpEndpoint}/v1/traces`, {
         method: "POST", redirect: "error", signal: AbortSignal.timeout(10_000),
         headers: { authorization: `Bearer ${this.config.apiKey}`, "x-bt-parent": `project_id:${this.config.projectId}`,
           "content-type": "application/x-protobuf", accept: "application/x-protobuf, application/json" },

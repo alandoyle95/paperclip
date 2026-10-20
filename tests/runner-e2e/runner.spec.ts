@@ -612,6 +612,9 @@ for (const execution of executions) {
       campaignId: process.env.PAPERCLIP_E2E_ACCOUNTING_CAMPAIGN_ID ?? "",
       attemptId: process.env.PAPERCLIP_E2E_ACCOUNTING_ATTEMPT_ID ?? "",
       executionId: execution.id, provider: execution.profile.provider, model: execution.profile.model, environment: execution.environment.id,
+    }, {
+      suiteId: execution.suite.id, suiteDefinitionHash: execution.suiteDefinitionHash,
+      profileId: execution.profile.id, caseId: execution.task.id, sourceRevision: resolveRunnerE2ESource().sha,
     }) : undefined;
     const saveTrace = async () => { if (trace) await writeSanitizedJson(snapshotsDir, "braintrust-trace.json", trace.snapshot(), secrets); };
     const onCompanyCreated = async (id: string) => {
