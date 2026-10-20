@@ -27,6 +27,7 @@ interface PublishedCampaign {
   results: PublishedResult[];
   accounting?: RunnerE2ECampaign["accounting"];
   operations?: RunnerE2ECampaign["operations"];
+  feedbackReview?: RunnerE2ECampaign["feedbackReview"];
 }
 
 async function relativeFiles(root: string, current = root): Promise<string[]> {
@@ -59,6 +60,7 @@ export async function regenerateRunnerDashboard(input: {
   historyFile?: string | null;
   outputDirectory?: string;
   evidenceHrefPrefix?: string;
+  feedbackReviewFile?: string;
 }) {
   const bundle = path.resolve(input.bundle);
   const outputDirectory = path.resolve(input.outputDirectory ?? bundle);
@@ -97,6 +99,9 @@ export async function regenerateRunnerDashboard(input: {
     results,
     accounting: normalized.accounting,
     operations: normalized.operations,
+    feedbackReview: input.feedbackReviewFile
+      ? JSON.parse(await readFile(input.feedbackReviewFile, "utf8"))
+      : normalized.feedbackReview,
   });
   // A rendering refresh must not inherit the renderer's checkout or CI event.
   const retainedSource = results.find((result) =>
@@ -196,7 +201,7 @@ async function main() {
   );
   if (!bundleArgument) {
     throw new Error(
-      "Usage: pnpm test:e2e:runner:dashboard -- <published-bundle-directory> [--history <history.json>]",
+      "Usage: pnpm test:e2e:runner:dashboard -- <published-bundle-directory> [--history <history.json>] [--feedback-review <review.json>]",
     );
   }
   const historyIndex = arguments_.indexOf("--history");
@@ -204,7 +209,10 @@ async function main() {
     historyIndex >= 0 ? arguments_[historyIndex + 1] : undefined;
   if (historyIndex >= 0 && !historyFile)
     throw new Error("--history requires a path");
-  await regenerateRunnerDashboard({ bundle: bundleArgument, historyFile });
+  const reviewIndex = arguments_.indexOf("--feedback-review");
+  const feedbackReviewFile = reviewIndex >= 0 ? arguments_[reviewIndex + 1] : undefined;
+  if (reviewIndex >= 0 && !feedbackReviewFile) throw new Error("--feedback-review requires a path");
+  await regenerateRunnerDashboard({ bundle: bundleArgument, historyFile, feedbackReviewFile });
 }
 
 if (

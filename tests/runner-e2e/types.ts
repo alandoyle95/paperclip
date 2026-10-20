@@ -445,6 +445,7 @@ export interface RunnerE2ECampaign {
   billing: RunnerE2EAggregateBillingSummary;
   accounting?: RunnerE2ECampaignAccounting;
   operations?: import("./operations-report.js").EvalOperationsReport;
+  feedbackReview?: import("./feedback-dispositions.js").CampaignFeedbackReview;
   suites: RunnerE2ESuiteSummary[];
   results: RunnerE2EResult[];
 }

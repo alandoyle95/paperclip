@@ -12,6 +12,7 @@ import { runnerMatrix } from "./catalog.js";
 import { billingCoverageLabel, summarizeExecutionBilling } from "./billing.js";
 import { isSelectedCarryForward, retainedCampaignAttempts } from "./attempt-accounting.js";
 import { summarizeCampaignFeedback } from "./feedback.js";
+import { campaignFeedbackReviewText } from "./feedback-dispositions.js";
 import { operationsReportText, readEvalOperationsReport } from "./operations-report.js";
 import { renderRunnerE2EDashboard } from "./dashboard.js";
 import {
@@ -315,6 +316,7 @@ async function main() {
     attempts: retained.attempts,
     excludedArtifacts: excludedArtifacts + retained.excludedArtifacts,
     ...(process.env.PAPERCLIP_E2E_OPERATIONS_LEDGER ? { operations: await readEvalOperationsReport(process.env.PAPERCLIP_E2E_OPERATIONS_LEDGER) } : {}),
+    ...(process.env.PAPERCLIP_E2E_FEEDBACK_REVIEW ? { feedbackReview: JSON.parse(await readFile(process.env.PAPERCLIP_E2E_FEEDBACK_REVIEW, "utf8")) } : {}),
   });
   const billing = campaign.billing;
   const feedback = summarizeCampaignFeedback(campaign.accounting?.attempts ?? campaign.results);
@@ -383,7 +385,8 @@ async function main() {
     `Accounting: ${campaign.accounting!.attempts.length} retained attempts; ${campaign.accounting!.missingAttempts} missing attempts; ${campaign.accounting!.excludedArtifacts} out-of-scope artifacts excluded. Costs cover captured usage, not unobserved setup or external charges.`,
     ...(campaign.operations ? operationsReportText(campaign.operations) : []),
     "",
-    `Feedback across retained attempts: ${feedback.complaints} complaints; ${feedback.suggestions} suggestions; ${feedback.review.length} distinct items awaiting review; ${feedback.incomplete} attempts with incomplete collection. Tool submissions: ${feedback.failedSubmissions} failed, ${feedback.unknownSubmissions} unresolved. Full bodies are in access-controlled snapshots/agent-feedback.json.`,
+    `Feedback across retained attempts: ${feedback.complaints} complaints; ${feedback.suggestions} suggestions; ${feedback.incomplete} attempts with incomplete collection. Tool submissions: ${feedback.failedSubmissions} failed, ${feedback.unknownSubmissions} unresolved. Full bodies are in access-controlled snapshots/agent-feedback.json.`,
+    campaignFeedbackReviewText(campaign),
     "",
     `Estimated Daytona list-price runtime cost: $${billing.estimatedRuntimeCostUsd.toFixed(6)}`,
     ...(billing.judge ? [`Estimated judge cost: ${billing.judge.estimatedCostUsd === null ? "unknown" : `$${billing.judge.estimatedCostUsd.toFixed(6)}`}; ${billing.judge.attempts} attempts; ${billing.judge.attemptsWithUnknownUsage} with unknown usage; $${billing.judge.reservedCostUsd.toFixed(6)} reserved`] : []),

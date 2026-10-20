@@ -8,6 +8,7 @@ import { journeyFeatureStyles, renderJourneyFeatureCoverage, renderJourneyFeatur
 import { STARTUP_REUSE_LAYERS, summarizeStartupReuse } from "../../packages/adapter-utils/src/startup-reuse.js";
 import { renderFirstTaskDetails } from "./first-task-report.js";
 import { summarizeCampaignFeedback } from "./feedback.js";
+import { renderCampaignFeedbackReview } from "./feedback-dispositions.js";
 import { renderEvalOperationsReport } from "./operations-report.js";
 import {
   discoverReportCatalog,
@@ -295,7 +296,7 @@ function renderCase(
       <summary><span>Test details</span><span class="case-detail-summary">${matcherResults.length ? `${passedMatchers}/${matcherResults.length} checks${notReached ? ` · ${notReached} not reached` : ""}` : "No checks recorded"}${entry ? ` · ${html(durationLabel(entry.result.durationMs))}` : ""}</span></summary>
     ${passed ? outcome : ""}
     ${billingStrip}
-    ${entry?.result.feedback ? `<p class="detail">Feedback: ${entry.result.feedback.complaints} complaints · ${entry.result.feedback.suggestions} suggestions · ${entry.result.feedback.review.length} distinct items awaiting review. Saved-feedback collection: ${html(entry.result.feedback.collection)}; invocation coverage: ${html(entry.result.feedback.invocationCollection)}. Tool receipts: ${entry.result.feedback.invocations.failed} failed · ${entry.result.feedback.invocations.unknown} unresolved. Full bodies: access-controlled snapshots/agent-feedback.json.</p>` : entry ? `<p class="detail">Feedback was not captured for this attempt.</p>` : ""}
+    ${entry?.result.feedback ? `<p class="detail">Feedback: ${entry.result.feedback.complaints} complaints · ${entry.result.feedback.suggestions} suggestions · ${entry.result.feedback.review.length} distinct items; see campaign feedback review. Saved-feedback collection: ${html(entry.result.feedback.collection)}; invocation coverage: ${html(entry.result.feedback.invocationCollection)}. Tool receipts: ${entry.result.feedback.invocations.failed} failed · ${entry.result.feedback.invocations.unknown} unresolved. Full bodies: access-controlled snapshots/agent-feedback.json.</p>` : entry ? `<p class="detail">Feedback was not captured for this attempt.</p>` : ""}
     ${entry?.result.tracing ? `<p class="detail">Braintrust export: ${html(entry.result.tracing.status)}; native configuration: ${html(entry.result.tracing.nativeConfiguration)}. Trace ${html(entry.result.tracing.traceId)} in project ${html(entry.result.tracing.projectId)}. Indexing and native-span correlation require independent verification.</p>` : ""}
     ${links}
     ${renderFirstTaskDetails(entry?.result)}
@@ -838,7 +839,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     ${renderCampaignSuiteSummary(input.campaign?.suites ?? [], catalog, "", false)}
     <details class="campaign-billing-details"><summary>Campaign usage and spend</summary>
     <section class="billing-overview" aria-label="Campaign billing summary">
-      <div class="billing-metric"><strong>${campaignFeedback.complaints} / ${campaignFeedback.suggestions}</strong><span>Complaints / suggestions · retained attempts</span><small>${campaignFeedback.review.length} distinct items awaiting review · ${campaignFeedback.incomplete} attempts with incomplete collection · ${campaignFeedback.failedSubmissions} failed submissions · ${campaignFeedback.unknownSubmissions} unresolved submissions</small></div>
+      <div class="billing-metric"><strong>${campaignFeedback.complaints} / ${campaignFeedback.suggestions}</strong><span>Complaints / suggestions · retained attempts</span><small>${campaignFeedback.review.length} distinct items · ${campaignFeedback.incomplete} attempts with incomplete collection · ${campaignFeedback.failedSubmissions} failed submissions · ${campaignFeedback.unknownSubmissions} unresolved submissions</small></div>
       ${input.campaign?.accounting ? `<div class="billing-metric"><strong>${input.campaign.accounting.attempts.length}</strong><span>${input.campaign.accounting.scope === "retained_attempts" ? "Retained attempts" : "Selected results only"}</span><small>${input.campaign.accounting.missingAttempts} missing attempts · ${input.campaign.accounting.excludedArtifacts} out-of-scope artifacts</small></div>` : ""}
       <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.inputTokens, campaignBilling.llm))}</strong><span>Input tokens</span></div>
       <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.outputTokens, campaignBilling.llm))}</strong><span>Output tokens</span></div>
@@ -852,7 +853,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       <div class="billing-metric"><strong>${html(durationLabel(campaignBilling.leaseDurationMs))}</strong><span>Daytona lease time</span></div>
       <div class="billing-metric"><strong>${campaignBilling.llm.runsWithReportedCost}/${campaignBilling.llm.runCount}</strong><span>Runs provider-priced</span></div>
       <p class="billing-note">Campaign costs include retained attempts, including failed retries. Result cards show the selected attempt. Provider-reported amounts and model estimates are separate; unpriced or unavailable runs are excluded, never counted as free. Coverage describes captured usage; unobserved setup, subscriptions, tools, CI and storage require additional accounting. Daytona runtime is a public-list-price estimate from captured lease time and pinned resources, before credits, discounts, storage allowance, or invoice adjustments. Local execution has no external runtime meter.</p>
-    </section>${input.campaign?.operations ? renderEvalOperationsReport(input.campaign.operations) : ""}</details>
+    </section>${input.campaign?.operations ? renderEvalOperationsReport(input.campaign.operations) : ""}${input.campaign ? renderCampaignFeedbackReview(input.campaign) : ""}</details>
     </section>
     <div class="results-heading" id="results"><h2 data-results-title>All results</h2><span data-results-description></span></div>
     <div data-feature-coverage>${renderJourneyFeatureCoverage(catalog, entryById)}</div>

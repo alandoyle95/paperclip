@@ -2546,6 +2546,35 @@ semantic triage. Historical artifacts without feedback fields are labeled as
 uncaptured. A killed worker that never reaches finalization is also uncaptured,
 not evidence of zero feedback.
 
+Create a private review template from the merged `normalized-results.json`:
+
+```sh
+pnpm exec tsx tests/runner-e2e/feedback-dispositions.ts /private/report/normalized-results.json /private/feedback-review.json
+```
+
+Inspect the full bodies in the retained attempt snapshots. Set `reviewedAt` to
+the review time and `reviewedBy` to `human` or `agent`. Assign each fingerprint
+one disposition: `actionable`, `duplicate`, `already_fixed`, `unsupported`, or
+`needs_investigation`. A duplicate must name a non-duplicate fingerprint in the
+same campaign via `duplicateOf`. Optional `issueNumber` links a public
+`paperclipai/paperclip` issue; keep private rationale outside this file.
+
+Import a completed review into an existing bundle without rerunning agents:
+
+```sh
+pnpm test:e2e:runner:dashboard -- /private/report --feedback-review /private/feedback-review.json
+```
+
+Alternatively, rebuild the same campaign and selection with
+`PAPERCLIP_E2E_FEEDBACK_REVIEW=/private/feedback-review.json`. Keep its original
+campaign ID. The importer requires exactly one decision per collected group
+and rejects a review if retained attempts or feedback coverage changed. Blank
+templates cannot count as reviewed. Dashboard regeneration and publication
+preserve the review. An empty review can record that no saved items were found;
+it never closes collection gaps, failed submissions, or changes product grades.
+This workflow makes no additional model call. Review performed by a separate
+paid model must be budgeted and recorded as `feedback_review` work separately.
+
 ### Cost-ledger integration contract
 
 `cost-ledger.ts` provides the request-level journal used by the eval operations

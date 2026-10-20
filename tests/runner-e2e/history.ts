@@ -1,6 +1,7 @@
 import { isIncompleteFirstTaskResult } from "./case-outcome.js";
 import { buildCampaignAccounting } from "./attempt-accounting.js";
 import { validateEvalOperationsReport } from "./operations-report.js";
+import { validateCampaignFeedbackReview } from "./feedback-dispositions.js";
 import { summarizeStartupReuse } from "../../packages/adapter-utils/src/startup-reuse.js";
 import { validateCampaignAccounting, validateRetainedRunnerResult } from "./result-validation.js";
 import {
@@ -71,6 +72,7 @@ export function buildRunnerCampaign(input: {
   attempts?: readonly RunnerE2EResult[];
   accounting?: RunnerE2ECampaignAccounting;
   operations?: RunnerE2ECampaign["operations"];
+  feedbackReview?: RunnerE2ECampaign["feedbackReview"];
   excludedArtifacts?: number;
   eventName?: string | null;
   catalog?: readonly ReportExecution[];
@@ -198,7 +200,7 @@ export function buildRunnerCampaign(input: {
       ),
     ).values(),
   ];
-  return {
+  const campaign: RunnerE2ECampaign = {
     schema: "paperclip.runner-e2e.campaign/v2",
     campaignId: input.campaignId,
     generatedAt: input.generatedAt,
@@ -221,9 +223,12 @@ export function buildRunnerCampaign(input: {
     billing: billingFor(results),
     accounting,
     ...(input.operations ? { operations: input.operations } : {}),
+    ...(input.feedbackReview ? { feedbackReview: input.feedbackReview } : {}),
     suites,
     results,
   };
+  if (campaign.feedbackReview) validateCampaignFeedbackReview(campaign, campaign.feedbackReview);
+  return campaign;
 }
 
 export function campaignHistoryRecord(
