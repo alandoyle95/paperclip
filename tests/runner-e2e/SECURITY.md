@@ -445,3 +445,12 @@ company's observability destination. The ingestion key crosses the public API vi
 Node fetch, outside Playwright tracing, and is included in launcher evidence
 redaction. Orchestration spans contain identifiers, phase timing, outcome, and
 feedback counts; they never contain provider credentials or feedback bodies.
+
+The bounded operations manifest is credential-free and private. Its parent-owned
+loopback gateway uses an ephemeral per-attempt token. Upstream credentials stay
+in the launcher, are included in secret scans, and are removed from the child
+provider environment. Only the selected Responses or Messages endpoint is
+forwarded to a fixed provider or Braintrust HTTPS origin; request headers do not
+select arbitrary destinations. Gateway response caching and fallback are refused.
+Request journal and usage receipts contain no prompt/response bodies or keys.
+The manifest, journal, and receipts are not public report projections.

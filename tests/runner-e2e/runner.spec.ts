@@ -605,7 +605,7 @@ for (const execution of executions) {
       verifyNativeInstructionPreflight(process.env[NATIVE_INSTRUCTION_PREFLIGHT_ENV]);
     }
     const credentials = credentialValues();
-    const secrets = normalizedSecrets([...Object.values(credentials), ...EVAL_OBSERVABILITY_SECRET_NAMES.map(name => process.env[name])]);
+    const secrets = normalizedSecrets([...Object.values(credentials), ...EVAL_OBSERVABILITY_SECRET_NAMES.map(name => process.env[name]), process.env.PAPERCLIP_E2E_GATEWAY_TOKEN]);
     const traceConfig = evalBraintrustConfig(process.env);
     const trace = traceConfig ? new EvalAttemptTrace(traceConfig, {
       campaignId: process.env.PAPERCLIP_E2E_ACCOUNTING_CAMPAIGN_ID ?? "",

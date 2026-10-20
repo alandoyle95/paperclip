@@ -2600,3 +2600,11 @@ trace context; they are correlated by these identities, not automatically childr
 of the orchestration span. Orchestration spans intentionally omit model usage and
 cost metrics to avoid duplicating provider-span charges. The separate provider
 connection suite and standalone judges do not yet use this attempt exporter.
+
+### Bounded local gateway pilot
+
+[OPERATIONS.md](./OPERATIONS.md) documents the opt-in operations manifest, exact
+selection admission, durable request reservations, local Responses/Messages proxy,
+and Braintrust routing. Current support is deliberately limited to local core
+Codex/Claude cells. The document distinguishes implemented accounting controls
+from live qualification and lists remaining billing/reporting coverage gaps.

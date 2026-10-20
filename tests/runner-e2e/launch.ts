@@ -1,3 +1,4 @@
+import { openEvalOperations, type EvalOperations } from "./operations.js";
 import { EVAL_OBSERVABILITY_SECRET_NAMES } from "./braintrust.js";
 import { runnerE2EPlaywrightInvocation } from "./web-server-command.js";
 import { verifyInstalledDaytonaPlugin } from "./installed-daytona-plugin.js";
@@ -468,9 +469,10 @@ async function runAttempt(input: {
   attempt: number;
   campaignId: string;
   options: ReturnType<typeof parseRunnerSelectors>;
+  operations?: EvalOperations;
 }): Promise<RunnerE2EResult[]> {
   const { executions, attempt, campaignId, options } = input;
-  const accountingCampaignId = process.env.PAPERCLIP_E2E_ACCOUNTING_CAMPAIGN_ID ?? campaignId;
+  const accountingCampaignId = input.operations?.manifest.limits.campaignId ?? process.env.PAPERCLIP_E2E_ACCOUNTING_CAMPAIGN_ID ?? campaignId;
   const accountingAttemptId = randomBytes(16).toString("hex");
   const execution = executions[0];
   if (!execution) throw new Error("A runner E2E cell must contain a task case");
@@ -497,6 +499,7 @@ async function runAttempt(input: {
   let attemptSecrets: string[] = [];
   let processCleanupFailed = false;
   let startupReceiptPath: string | undefined;
+  let gateway: Awaited<ReturnType<EvalOperations["start"]>> | undefined;
   const rawCleanupResults: Array<{ cleanup: string; synthetic: boolean; status: string }> = [];
   try {
     const paperclipHome = path.join(temporaryRoot, "paperclip-home");
@@ -526,7 +529,9 @@ async function runAttempt(input: {
     const decisionSigningSecret = secret(48);
     const toolActionSigningSecret = secret(48);
     const betterAuthSecret = secret(48);
+    gateway = await input.operations?.start(execution, accountingAttemptId, attempt);
     const credentialSources = {
+      PAPERCLIP_E2E_GATEWAY_TOKEN: gateway?.token,
       ...Object.fromEntries([...CREDENTIAL_NAMES, ...EVAL_OBSERVABILITY_SECRET_NAMES].map((name) => [name, process.env[name]])),
       PAPERCLIP_AGENT_JWT_SECRET: agentJwtSecret,
       PAPERCLIP_DECISION_SIGNING_SECRET: decisionSigningSecret,
@@ -580,6 +585,12 @@ async function runAttempt(input: {
       PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: toolActionSigningSecret,
       BETTER_AUTH_SECRET: betterAuthSecret,
     };
+    if (gateway) {
+      for (const name of CREDENTIAL_NAMES) delete childEnv[name];
+      childEnv[execution.profile.credential] = gateway.token;
+      childEnv.PAPERCLIP_E2E_GATEWAY_BASE_URL = gateway.baseUrl;
+      childEnv.PAPERCLIP_E2E_GATEWAY_TOKEN = gateway.token;
+    }
     // The database URLs are stripped here and again at the Playwright web-server
     // boundary so a developer's shell can never redirect this paid test.
     delete childEnv.DATABASE_URL;
@@ -844,6 +855,8 @@ async function runAttempt(input: {
     }
     return [...publishedResults];
   } finally {
+    let gatewayCleanupError: unknown;
+    try { await gateway?.close(); } catch (error) { gatewayCleanupError = error; }
     if (!processCleanupFailed) reapNewDetachedDarwinSharedMemory(sharedMemoryBaseline);
     let cleanupError: unknown;
     const resourceAdmissionStarted = await access(path.join(temporaryRoot, "artifacts-private", "resource-admission-started"))
@@ -885,6 +898,7 @@ async function runAttempt(input: {
         `Refusing to remove unexpected temporary path ${temporaryRoot}`,
       );
     }
+    if (gatewayCleanupError) cleanupError = new AggregateError([cleanupError, gatewayCleanupError].filter(Boolean), "Eval gateway cleanup failed");
     if (startupReceiptPath) {
       const receipt = JSON.parse(await readFile(startupReceiptPath, "utf8"));
       receipt.status = cleanupError ? "installed_launch_chain_cleanup_failed" : "installed_launch_chain_passed";
@@ -941,6 +955,7 @@ async function runExecutionWithRetry(input: {
   campaignId: string;
   options: ReturnType<typeof parseRunnerSelectors>;
   onAttempt: (result: RunnerE2EResult) => void;
+  operations?: EvalOperations;
 }): Promise<RunnerE2EResult> {
   const { execution, campaignId, options } = input;
   return executeWithAutomaticRetry({
@@ -951,7 +966,7 @@ async function runExecutionWithRetry(input: {
       `Retrying ${execution.id} in a fresh isolated harness after ${result.failureClass!.replaceAll("_", " ")}`,
     ),
     runAttempt: async attempt => {
-      const [result] = await runAttempt({ executions: [execution], attempt, campaignId, options });
+      const [result] = await runAttempt({ executions: [execution], attempt, campaignId, options, operations: input.operations });
       if (!result) throw new Error(`No result produced for ${execution.id} attempt ${attempt}`);
       input.onAttempt(result);
       return result;
@@ -978,7 +993,9 @@ async function runWithConcurrency<T, R>(
       }
     },
   );
-  await Promise.all(workers);
+  const settled = await Promise.allSettled(workers);
+  const failures = settled.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+  if (failures.length) throw new AggregateError(failures.map(result => result.reason), "Eval campaign workers failed");
   return results;
 }
 
@@ -1016,6 +1033,7 @@ async function main() {
     return;
   }
 
+  if (process.env.PAPERCLIP_E2E_OPERATIONS_MANIFEST && executions.some(execution => execution.task.flow === "provider_connection")) throw new Error("Provider connection campaign has no budgeted routing qualification");
   if (executions.some(execution => execution.task.flow === "provider_connection")) {
     const { runConnectionCampaign } = await import("./connection-launch.js");
     await runConnectionCampaign({ executions, catalog: runnerMatrix, configFile: options.connectionConfig, repositoryRoot });
@@ -1046,7 +1064,7 @@ async function main() {
 
   await loadLocalEnvironment(process.env);
   assertRemoteNativeEvidencePrerequisites(executions, process.env);
-  const missingCredentials = [
+  const missingCredentials = process.env.PAPERCLIP_E2E_OPERATIONS_MANIFEST ? [] : [
     ...new Set(
       executions.flatMap((execution) => execution.requiredCredentials),
     ),
@@ -1090,11 +1108,22 @@ async function main() {
     `Running ${executions.length} isolated execution(s) with max parallelism ${requestedParallelism}`,
   );
   const attempts: RunnerE2EResult[] = [];
-  const finalResults = await runWithConcurrency(
-    executions,
-    requestedParallelism,
-    (execution) => runExecutionWithRetry({ execution, campaignId, options, onAttempt: result => attempts.push(result) }),
-  );
+  const operations = process.env.PAPERCLIP_E2E_OPERATIONS_MANIFEST
+    ? await openEvalOperations(process.env.PAPERCLIP_E2E_OPERATIONS_MANIFEST, executions, options.maxAutomaticRetries, process.env) : undefined;
+  let finalResults: RunnerE2EResult[] = [];
+  let campaignFailed = false;
+  try {
+    if (operations) await writeFile(path.join(summaryDir, "operations-preflight.json"), `${JSON.stringify(operations.manifest, null, 2)}\n`, { mode: 0o600 });
+    finalResults = await runWithConcurrency(executions, operations ? Math.min(requestedParallelism, operations.manifest.limits.maxConcurrent) : requestedParallelism,
+      execution => runExecutionWithRetry({ execution, campaignId, options, operations, onAttempt: result => attempts.push(result) }));
+  } catch {
+    // A crashed worker must not suppress the campaign report or surviving
+    // attempts. The exact selected set below makes unproduced results missing.
+    campaignFailed = true;
+    finalResults = [...new Map(attempts.map(result => [result.executionId, result])).values()];
+  } finally {
+    try { await operations?.close(); } catch { campaignFailed = true; }
+  }
 
   const generatedAt = new Date().toISOString();
   const campaign = buildRunnerCampaign({
@@ -1145,7 +1174,8 @@ async function main() {
   console.log(
     `Campaign ${campaignId}: ${safeCampaign.passed}/${safeCampaign.selected} passed`,
   );
-  if (safeCampaign.failed > 0) process.exitCode = 1;
+  if (campaignFailed) console.error("Campaign finalization incomplete; inspect retained attempt artifacts and the operations ledger.");
+  if (campaignFailed || safeCampaign.failed > 0) process.exitCode = 1;
 }
 
 await main().catch((error) => {
