@@ -1,3 +1,6 @@
+import { attachPreservedWorkspaceSnapshots } from "../workspace-recovery-snapshot.js";
+import { materializeFreshWorkspaceSeed } from "../fresh-workspace-seed.js";
+import { assertTaskWorkspaceExecutionAccess } from "../task-workspace-access.js";
 import { nativeExecutionUsesTaskWorkspace } from "./external-provider.js";
 import { readGitCacheRestoration } from "../git-workspace-restoration.js";
 import { createHeartbeatPreparationTiming } from "./preparation-timing.js";
@@ -94,6 +97,7 @@ export interface HeartbeatWorkspacePreparationInput {
     context: Record<string, unknown>;
     responsibleUserId: string | null;
     previousSessionParams: Record<string, unknown> | null;
+    freshWorkspace?: import("../fresh-workspace-continuation.js").ContinuationReadiness | null;
     workspaceSelection?: import("@paperclipai/shared").TaskWorkspaceIntent | null;
   };
   policy: {
@@ -156,6 +160,7 @@ export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspac
 
 async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspacePreparationInput) {
   const { run, agent, controllerLease, nativeRunnerPreparationSpans } = input;
+  const fresh = input.task.freshWorkspace?.mode === "fresh_isolated_workspace";
   const timeWorkspace = createHeartbeatPreparationTiming(run.id);
   const {
     issueRef,
@@ -194,6 +199,10 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     isDotRun,
     runOptions,
   } = input.reuse;
+  // An ordinary clean task directory already has a new per-attempt identity.
+  // It is not a repository source and must not pass through Git copy admission.
+  const freshNeedsSeed = fresh && !isDotRun && !useIsolatedTaskDirectory &&
+    !(nativeChatWorkspaceScope && !nativeChatWorkspaceScope.projectId);
   const {
     envOrchestrator,
     executionWorkspacesSvc,
@@ -240,6 +249,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         const cwd = await materializeIsolatedTaskDirectory({
           companyId: agent.companyId,
           issueId: issueRef.id,
+          ...(input.task.freshWorkspace?.mode === "fresh_isolated_workspace" ? { attemptId: run.id } : {}),
         });
         if (reusableExistingExecutionWorkspace && (
           reusableExistingExecutionWorkspace.companyId !== agent.companyId ||
@@ -348,7 +358,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   const skipHostProvision = copyOnlyProvisioning || hostProvisionDriver === "sandbox" || hostProvisionDriver === "ssh";
   const hostExecutionWorkspaceConfig = isDotRun ? {} :
     stripHostWorkspaceProvision({
-      config: mergedConfig,
+      config: fresh ? { ...mergedConfig, workspaceStrategy: { type: "project_primary" } } : mergedConfig,
       skipHostProvision,
     });
   const executionWorkspaceBase = {
@@ -491,6 +501,26 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       agentId: agent.id,
     },
   );
+  if (freshNeedsSeed && issueId) {
+    await controllerLease.assertOwned();
+    const verifySourceAccess = async () => {
+      await assertTaskWorkspaceExecutionAccess(db, {
+        type: "agent", source: "agent_jwt", companyId: agent.companyId,
+        agentId: agent.id, runId: run.id,
+        onBehalfOfUserId: responsibleUserId === "local-board" ? null : responsibleUserId,
+      }, agent.companyId, { issueId });
+    };
+    const cwd = await materializeFreshWorkspaceSeed({
+      companyId: agent.companyId, issueId, runId: run.id, sourceCwd: executionWorkspaceBase.baseCwd,
+      repoUrl: executionWorkspaceBase.repoUrl,
+      baseRef: readNonEmptyString(parseObject(mergedConfig.workspaceStrategy).baseRef) ?? executionWorkspaceBase.repoRef,
+      beforeCopy: verifySourceAccess,
+    });
+    await verifySourceAccess();
+    executionWorkspaceBase.baseCwd = cwd;
+    resolvedWorkspace.cwd = cwd;
+    await controllerLease.assertOwned();
+  }
   const {
     executionWorkspace,
     reusedExecutionWorkspace,
@@ -599,6 +629,20 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         }),
     },
   ));
+  if (input.task.freshWorkspace?.mode === "fresh_isolated_workspace" && issueId) {
+    const snapshots = await attachPreservedWorkspaceSnapshots({ db, companyId: agent.companyId,
+      issueId, sourceRunIds: [input.task.freshWorkspace.sourceRunId], cwd: executionWorkspace.cwd });
+    const recoveredFiles = snapshots.map(snapshot => ({ ...snapshot, path: path.relative(executionWorkspace.cwd, snapshot.path) }));
+    context.recoveredWorkspaceFiles = recoveredFiles;
+    const continuation = context.executionContinuation as import("@paperclipai/shared").ExecutionContinuationEnvelope | null;
+    if (continuation) {
+      continuation.recoveredFiles = recoveredFiles;
+      // The wake was assembled before filesystem preparation. Update that same
+      // server-authored envelope so every adapter receives the verified paths.
+      const wake = context.paperclipWake as Record<string, unknown> | undefined;
+      if (wake) wake.executionContinuation = continuation;
+    }
+  }
   const resolvedProjectId =
     reusableExistingExecutionWorkspace
       ? reusableExistingExecutionWorkspace.projectId
