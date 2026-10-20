@@ -181,3 +181,8 @@ workspace or tool server. Return the metadata and `executionStopped: true` only
 after the probe and its descendants stop. A lost reply keeps the task available
 for `stop`, `status`, and `complete`. Core checks the profile and model before
 it accepts the account. Do not store the token in task metadata or logs.
+
+For a native hello probe, select a saved AI account or use the installed account.
+Core rejects draft credentials and authentication settings when no saved account
+is selected. Core does not test a different installed account in their place.
+Only Core can supply the selected account identity and local credential home.

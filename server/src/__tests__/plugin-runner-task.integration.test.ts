@@ -1,3 +1,4 @@
+import * as pluginProbe from "../services/native-runtime/plugin-runner-probe.js";
 import { randomUUID } from "node:crypto";
 import { PassThrough } from "node:stream";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -109,6 +110,14 @@ databaseSuite("Core plugin Runner task lifecycle", () => {
         .resolves.toMatchObject({ kind: "description" });
       const [probeLease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, probe.executionTarget.leaseId!));
       expect(probeLease.heartbeatRunId).toBeNull();
+      const selected = { identity: "core-selected-revision", sessionIdentity: "core-selected-account", home: "/core-owned-home" };
+      const verify = vi.spyOn(pluginProbe, "probePluginRunnerEnvironment").mockResolvedValue({ adapterType: "paperclip_runner", status: "pass", testedAt: new Date().toISOString(), checks: [] });
+      try {
+        await setup.testManagedEnvironment("paperclip_runner", { companyId, adapterType: "paperclip_runner", config: {}, executionTarget: probe.executionTarget },
+          { provider: "openai" } as any, selected as any);
+        expect(verify).toHaveBeenCalledWith(expect.anything(), { identity: selected.identity, accountIdentity: selected.sessionIdentity, home: "/core-owned-home/provider" });
+      } finally { verify.mockRestore(); }
+
       await probe.executionTarget.runnerTask!({ kind: "check_project_auth", configurationId: "probe-config", provider: "openai", projectIds: [] });
       await probe.executionTarget.runnerTask!({ kind: "submit", preparedLaunchId: "probe-config", bootstrapTicket: "synthetic-probe-ticket", projectIds: [],
         runner: { protocolMin: 1, protocolMax: 3, harness: "codex", runnerId: "probe-runner", leaseId: probeLease.id,

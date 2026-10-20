@@ -60,6 +60,18 @@ describe("plugin Runner setup", () => {
       expect(probe).toHaveBeenCalledOnce();
     } finally { probe.mockRestore(); }
   });
+  it.each([
+    { env: { OPENAI_API_KEY: "draft-key-must-not-be-ignored" } },
+    { managedAiConnection: { identity: "untrusted-config-identity" } },
+  ])("rejects untrusted account input before testing an installed account: %j", async supplied => {
+    const task = vi.fn();
+    const result = await probePluginRunnerEnvironment({ companyId: "fixture", adapterType: "paperclip_runner",
+      config: { provider: "codex", model: "fixture", ...supplied },
+      executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: "probe-lease",
+        runnerTaskProbe: { runId: "probe-run", sessionId: "probe-session" }, runnerTask: task } });
+    expect(result).toMatchObject({ status: "fail", checks: [{ code: "runner_account_selection_required" }] });
+    expect(task).not.toHaveBeenCalled();
+  });
   it.each(["wrong-model", "changed-policy", "resume", "crash", "managed-account", "unsafe-project", "unsafe-installed-account"])("requires the actual Runner/provider hello through the task API (%s)", async mode => {
     const root = await mkdtemp(join(tmpdir(), "plugin-probe-fixture-"));
     const workspace = join(root, "workspace");
@@ -232,11 +244,12 @@ describe("plugin Runner setup", () => {
         return;
       }
       const result = await probePluginRunnerEnvironment({ companyId: "fixture", adapterType: "paperclip_runner",
-        config: { provider: "codex", model: "gpt-6.1-sol", env: { OPENAI_API_KEY: "core-secret-not-transferred", CODEX_HOME: accountHome },
+        config: { provider: "codex", model: "gpt-6.1-sol", env: ["managed-account", "unsafe-project"].includes(mode)
+            ? { OPENAI_API_KEY: "core-secret-not-transferred", CODEX_HOME: accountHome } : {},
           ...(["managed-account", "unsafe-project"].includes(mode) ? { managedAiConnection: { identity: "selected-revision", sessionIdentity: "selected-account" } } : {}) },
         executionTarget: { kind: "remote", transport: "sandbox", providerKey: "plugin", leaseId: randomUUID(), remoteCwd: "/runner-only/project-does-not-exist-on-core",
           runnerTaskProbe: { runId: probeRunId, sessionId: randomUUID() }, runnerTask: task },
-      });
+      }, ["managed-account", "unsafe-project"].includes(mode) ? { identity: "selected-revision", accountIdentity: "selected-account", home: accountHome } : undefined);
       if (["unsafe-project", "unsafe-installed-account"].includes(mode)) {
         expect(result.status).toBe("fail");
         expect(operations.some(op => op.kind === "check_project_auth")).toBe(true);

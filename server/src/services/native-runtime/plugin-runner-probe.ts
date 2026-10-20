@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AdapterEnvironmentTestContext, AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
 import { resolvePaperclipRunnerPiThinkingLevel } from "@paperclipai/adapter-utils";
+import { AI_AUTH_ENV_KEYS } from "../ai-connection-runtime.js";
 import { environmentTaskResultSchema } from "@paperclipai/plugin-sdk";
 import { probeNativeRunnerEnvironment, resolveClaudeEffort } from "../../vendor/paperclip-runner/index.js";
 import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
@@ -12,7 +13,9 @@ import { resolvePaperclipRunnerProviderProfile } from "./provider-profile.js";
 import { resolveAcpxQualification } from "./acpx-qualification.js";
 
 /** Core verifies a real Runner; providers only implement their task API. */
-export async function probePluginRunnerEnvironment(context: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult> {
+export async function probePluginRunnerEnvironment(context: AdapterEnvironmentTestContext,
+  managed?: { identity: string; accountIdentity: string; home?: string },
+): Promise<AdapterEnvironmentTestResult> {
   const testedAt = new Date().toISOString();
   const target = context.executionTarget;
   if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runnerTask || !target.runnerTaskProbe || !target.leaseId) {
@@ -27,18 +30,22 @@ export async function probePluginRunnerEnvironment(context: AdapterEnvironmentTe
   try {
     const profile = resolvePaperclipRunnerProviderProfile(context.config);
     if (profile.provider !== "codex" && profile.provider !== "opencode" && profile.provider !== "acpx") throw new Error("Plugin Runner setup requires a workspace harness");
+    const environment = (context.config.env ?? {}) as NodeJS.ProcessEnv;
+    if (!managed && (context.config.managedAiConnection || AI_AUTH_ENV_KEYS.some(key => environment[key]?.trim()))) {
+      return { adapterType: "paperclip_runner", status: "fail", testedAt,
+        checks: [{ code: "runner_account_selection_required", level: "error",
+          message: "Select a saved AI account, or remove draft authentication settings to test the installed account." }] };
+    }
     const description = environmentTaskResultSchema.parse(await task({ kind: "describe" }));
     if (description.kind !== "description" || description.launchPreparationVersion !== 1 || description.projectAuthCheckVersion !== 1) throw new Error("Plugin Runner launch preparation v1 unavailable");
-    const account = context.config.managedAiConnection as { identity?: string; sessionIdentity?: string } | undefined;
-    const environment = (context.config.env ?? {}) as NodeJS.ProcessEnv;
     const credentials = await preparePluginRunnerCredentials({
       provider: profile.provider === "acpx" ? profile.acpxAgent! : profile.provider,
-      identity: account?.identity, accountIdentity: account?.sessionIdentity,
-      home: environment.CODEX_HOME, environment,
+      identity: managed?.identity, accountIdentity: managed?.accountIdentity,
+      home: managed?.home, environment,
     });
     const owner = createPluginRunnerTaskOwner({ ...credentials, projectAuthCheckVersion: description.projectAuthCheckVersion, task, projectIds: [],
       harness: profile.provider === "acpx" ? profile.acpxAgent! : profile.provider,
-      credentialIdentity: (context.config.managedAiConnection as { identity?: string } | undefined)?.identity });
+      credentialIdentity: managed?.identity });
     probeStarted = true;
     const result = await probeNativeRunnerEnvironment({ runtimeDirectory: root, provider: profile.provider,
       model: profile.model, workingDirectory: target.remoteCwd, timeoutMs: 45_000,
