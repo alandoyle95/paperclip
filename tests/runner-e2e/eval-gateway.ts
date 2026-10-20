@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { once } from "node:events";
 import { usdToUnits } from "../../packages/shared/src/money.js";
 import { estimateProviderCost, ProviderUsageAccumulator, type EvalModelPrice, type ProviderUsageReceipt } from "./provider-usage.js";
-import { validEvalLedgerId, type EvalChargeIdentity, type openEvalCostLedger } from "./cost-ledger.js";
+import { EvalAdmissionError, validEvalLedgerId, type EvalChargeIdentity, type openEvalCostLedger } from "./cost-ledger.js";
 
 type Ledger = Awaited<ReturnType<typeof openEvalCostLedger>>;
 export interface EvalGatewayRoute {
@@ -101,7 +101,7 @@ export async function forwardEvalRequest(input: {
   ledger: Ledger; identity: EvalChargeIdentity; route: EvalGatewayRoute; payload: unknown;
   deadlineAt: number; signal?: AbortSignal; anthropicBeta?: string;
   onHeaders: (status: number, headers: Record<string, string>) => void;
-  onChunk: (chunk: Uint8Array) => Promise<void>;
+  onChunk: (chunk: Uint8Array, signal: AbortSignal) => Promise<void>;
   persist: (receipt: EvalGatewayReceipt) => Promise<void>;
   transport?: typeof fetch;
 }): Promise<EvalGatewayReceipt> {
@@ -156,7 +156,7 @@ export async function forwardEvalRequest(input: {
         const next = await reader.read(); if (next.done) break;
         size += next.value.length; if (size > 32 * 1024 * 1024) throw new Error("response_too_large");
         if (stream) stream.push(next.value); else chunks.push(next.value);
-        await input.onChunk(next.value);
+        await input.onChunk(next.value, signal);
       }
       if (stream) stream.push(new Uint8Array(), true);
       else if (size) usage.observe(JSON.parse(Buffer.concat(chunks).toString("utf8")));
@@ -226,11 +226,12 @@ export async function startEvalGateway(input: Omit<Parameters<typeof forwardEval
         const receipt = await forwardEvalRequest({ ...input, payload: await requestJson(req), signal: abort.signal,
           anthropicBeta: typeof req.headers["anthropic-beta"] === "string" ? req.headers["anthropic-beta"] : undefined,
           onHeaders: (status, headers) => { res.writeHead(status, headers); },
-          onChunk: async chunk => { if (!res.write(chunk)) await once(res, "drain", { signal: abort.signal }); },
+          onChunk: async (chunk, signal) => { if (!res.write(chunk)) await once(res, "drain", { signal }); },
         });
         if (receipt.outcome === "succeeded" || receipt.errorCode === "upstream_rejected") res.end();
         else respond(res, 502, receipt.errorCode ?? "request_failed");
-      } catch {
+      } catch (error) {
+        if (error instanceof EvalAdmissionError) { respond(res, 429, "eval_admission_denied"); return; }
         // Ledger or receipt persistence failure must stop every later admission.
         poisoned = true; respond(res, 503, "eval_admission_or_persistence_failed");
       } finally { controllers.delete(abort); res.off("close", onClose); }

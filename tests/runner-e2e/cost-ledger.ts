@@ -58,6 +58,9 @@ const fields = (value: object, allowed: string[]) => {
 };
 const ranks = { unknown: 0, allocated: 1, estimated: 2, reported: 3, reconciled: 4 };
 
+/** Admission refusals leave the journal valid and may clear as work finishes. */
+export class EvalAdmissionError extends Error {}
+
 export class EvalSpendState {
   readonly requests = new Map<string, RequestState>();
   readonly observations = new Map<string, EvalCostObservation>();
@@ -118,11 +121,11 @@ export class EvalSpendState {
       if (this.requests.has(event.requestId)) throw new Error("Request already reserved");
       if (amount(event.maxUsd) <= 0n) throw new Error("Request reservation must be positive");
       const current = this.snapshot();
-      if (now >= Date.parse(this.limits.deadlineAt)) throw new Error("Eval campaign deadline reached");
-      if (this.requests.size >= this.limits.maxRequests) throw new Error("Eval campaign request cap reached");
-      if (current.inflight >= this.limits.maxConcurrent) throw new Error("Eval campaign concurrency cap reached");
-      if (current.conflictingRequests) throw new Error("Eval cost receipts conflict; admission stopped");
-      if (amount(current.committedUsd) + amount(event.maxUsd) > amount(this.limits.maxUsd)) throw new Error("Eval campaign spending cap reached");
+      if (now >= Date.parse(this.limits.deadlineAt)) throw new EvalAdmissionError("Eval campaign deadline reached");
+      if (this.requests.size >= this.limits.maxRequests) throw new EvalAdmissionError("Eval campaign request cap reached");
+      if (current.inflight >= this.limits.maxConcurrent) throw new EvalAdmissionError("Eval campaign concurrency cap reached");
+      if (current.conflictingRequests) throw new EvalAdmissionError("Eval cost receipts conflict; admission stopped");
+      if (amount(current.committedUsd) + amount(event.maxUsd) > amount(this.limits.maxUsd)) throw new EvalAdmissionError("Eval campaign spending cap reached");
     } else if (event.type === "observe") {
       const o = event.observation;
       fields(o, ["observationId", "requestId", "source", "provider", "model", "providerRequestId", "currency", "route", "classification", "costUsd", "pricingVersion", "tokens", "final"]);

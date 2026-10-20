@@ -12,10 +12,10 @@ const route: EvalGatewayRoute = { provider: "openai", mode: "braintrust", apiKey
   price: { provider: "openai", model: "fixture", version: "fixture-1", sourceUrl: "https://provider.invalid/prices", inputUsdPerMillion: "2", cachedReadUsdPerMillion: "1", outputUsdPerMillion: "10", cacheWrite30mUsdPerMillion: "2", cacheWrite12hUsdPerMillion: "2" } };
 const usage = { object: "response", status: "completed", id: "provider-response", model: "fixture", usage: { input_tokens: 10, input_tokens_details: { cache_write_tokens: 0, cached_tokens: 2 }, output_tokens: 5, output_tokens_details: { reasoning_tokens: 3 } } };
 const response = () => Response.json(usage, { headers: { "x-bt-used-endpoint": "OPENAI_API_KEY", "x-bt-cached": "MISS", "x-bt-request-id": "gateway-request", "x-bt-span-id": "gateway-span" } });
-async function fixture(maxUsd = "1") {
+async function fixture(maxUsd = "1", maxConcurrent = 2) {
   const dir = await mkdtemp(path.join(tmpdir(), "eval-forward-test-")); directories.push(dir);
   const file = path.join(dir, "ledger.jsonl"), deadlineAt = Date.now() + 30_000;
-  const ledger = await openEvalCostLedger(file, { campaignId: "campaign", maxUsd, deadlineAt: new Date(deadlineAt).toISOString(), maxRequests: 10, maxConcurrent: 2 });
+  const ledger = await openEvalCostLedger(file, { campaignId: "campaign", maxUsd, deadlineAt: new Date(deadlineAt).toISOString(), maxRequests: 10, maxConcurrent });
   closes.push(() => ledger.close());
   const receipts: EvalGatewayReceipt[] = [];
   return { ledger, file, deadlineAt, identity, route, receipts, payload: { model: "fixture", input: "hello", max_output_tokens: 500 },
@@ -147,4 +147,34 @@ it("retains malformed provider identifiers without losing the final receipt or l
   expect(receipt).toMatchObject({ providerRequestId: "request with spaces", usage: { model: "unexpected model name" }, final: true, costUsd: null });
   expect(f.receipts.at(-1)).toEqual(receipt);
   expect(f.ledger.snapshot()).toMatchObject({ heldUsd: "0.003000000", unknownRequests: 1, inflight: 0 });
+});
+it("admits later HTTP requests after temporary concurrency exhaustion", async () => {
+  const f = await fixture("1", 1);
+  let admitted!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { admitted = resolve; });
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const transport = vi.fn<typeof fetch>(async () => { admitted(); await blocked; return response(); });
+  const gateway = await startEvalGateway({ ...f, transport }); closes.push(() => gateway.close());
+  const request = () => fetch(`${gateway.baseUrl}/responses`, { method: "POST", headers: { authorization: `Bearer ${gateway.token}` }, body: JSON.stringify(f.payload) });
+  const first = request(); await started;
+  try {
+    const denied = await request();
+    expect(denied.status).toBe(429); expect(transport).toHaveBeenCalledOnce();
+  } finally { release(); }
+  expect(await (await first).json()).toEqual(usage);
+  const later = await request();
+  expect(later.status).toBe(200); expect(await later.json()).toEqual(usage);
+  expect(transport).toHaveBeenCalledTimes(2);
+  expect(f.ledger.snapshot()).toMatchObject({ inflight: 0, unknownRequests: 0 });
+});
+it("applies the request deadline while waiting for downstream backpressure", async () => {
+  const f = await fixture();
+  const receipt = await forwardEvalRequest({ ...f, route: { ...f.route, timeoutMs: 50 }, transport: async () => response(),
+    onChunk: async (_chunk, signal) => {
+      signal.throwIfAborted();
+      await new Promise<void>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+    },
+  });
+  expect(receipt).toMatchObject({ outcome: "cancelled", errorCode: "request_cancelled" });
+  expect(f.ledger.snapshot()).toMatchObject({ inflight: 0, unknownRequests: 1, heldUsd: "0.003000000" });
 });
