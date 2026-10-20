@@ -10,6 +10,87 @@ import {
 } from "./NewAgent.test-support";
 
 describe("New agent setup", () => {
+  it("creates an inactive record before connecting and finishes that same agent", async () => {
+    await render("codex_local");
+    expect(api.create).toHaveBeenCalledTimes(1);
+    const setupId = api.create.mock.calls[0][1].setupId;
+    expect(api.create.mock.calls[0][1]).toMatchObject({ name: "Atlas", runtimeConfig: { heartbeat: { enabled: false } } });
+    expect(state.navigate).toHaveBeenCalledWith(expect.stringContaining(`setupAgentId=${setupId}`), { replace: true });
+    expect(api.hire).not.toHaveBeenCalled();
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    await click("OpenAIAPI key");
+    await fill("API key", "setup-test-key");
+    await click("Connect");
+    expect(api.update).toHaveBeenCalledWith(setupId, expect.objectContaining({ runtimeConfig: expect.objectContaining({ aiConnection: expect.anything() }) }), "company-1");
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].setupAgentId).toBe(setupId);
+    expect(api.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries early creation with the same identity before offering authentication", async () => {
+    api.create.mockRejectedValueOnce(new Error("Creation unavailable"));
+    await render("codex_local");
+    expect(container.textContent).toContain("Creation unavailable");
+    expect(container.textContent).not.toContain("Complete subscription login");
+    await click("Retry");
+    expect(api.create).toHaveBeenCalledTimes(2);
+    expect(api.create.mock.calls[1][1].setupId).toBe(api.create.mock.calls[0][1].setupId);
+    expect(container.textContent).toContain("Connect a model");
+  });
+
+  it("resumes a saved setup record and its configuration after navigation", async () => {
+    await render("codex_local");
+    await click("OpenAIAPI key");
+    await fill("API key", "setup-test-key");
+    await click("Connect");
+    await fill("Model", "gpt-5.4");
+    await click("Save & exit");
+    const setupId = api.create.mock.calls[0][1].setupId;
+    expect(state.navigate).toHaveBeenLastCalledWith("/agents/all");
+    await act(async () => root.render(null));
+    cache.clear();
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "codex_local", setupAgentId: setupId });
+    await renderCurrentParams();
+    await settle();
+    expect(container.textContent).toContain("Configure your agent");
+    expect(container.textContent).not.toContain("Your agent is ready");
+    expect((container.querySelector('[aria-label="Model"]') as HTMLInputElement).value).toBe("gpt-5.4");
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1]).toMatchObject({ setupAgentId: setupId, adapterConfig: { model: "gpt-5.4" } });
+    expect(api.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains the first agent's role when finishing its setup", async () => {
+    api.list.mockResolvedValue([]);
+    await render("codex_local");
+    await connect("OpenAI");
+    api.list.mockResolvedValue([{ id: api.create.mock.calls[0][1].setupId, role: "ceo", status: "paused" }]);
+    await act(async () => { await cache.invalidateQueries({ queryKey: queryKeys.agents.list("company-1") }); });
+    await settle();
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].role).toBe("ceo");
+  });
+
+  it("keeps the setup identity when finalization fails and is retried", async () => {
+    await render("codex_local");
+    await connect("OpenAI");
+    api.hire.mockRejectedValueOnce(new Error("Hire unavailable"));
+    await click("Finish setup");
+    expect(container.textContent).toContain("Hire unavailable");
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledTimes(2);
+    expect(api.hire.mock.calls[1][1].setupAgentId).toBe(api.hire.mock.calls[0][1].setupAgentId);
+    expect(api.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("carries the existing Claude stored-login authorization into a saved setup", async () => {
+    api.getClaudeOAuthTokenStatus.mockResolvedValue({ secretId: "stored-oauth", latestVersion: 1 });
+    await render("claude_local");
+    await click("ClaudeSubscription");
+    await click("Use saved subscription");
+    expect(api.update.mock.calls[0][1].applyStoredClaudeLogin).toBe(true);
+  });
+
   it.each([
     ["paperclip", "Connect", "image"], ["legacy", "Connect", "image"],
     ["paperclip", "Finish setup", "image"], ["legacy", "Finish setup", "image"],
@@ -705,7 +786,7 @@ describe("New agent setup", () => {
       expect(container.textContent).toContain("Your agent is ready");
       await click("Assign Atlas a Task");
       expect(state.openNewIssue).toHaveBeenCalledWith({
-        assigneeAgentId: "new-agent",
+        assigneeAgentId: api.create.mock.calls[0][1].setupId,
         status: "todo",
       });
     },

@@ -1785,6 +1785,17 @@ export function agentRoutes(
     throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
   }
 
+  async function assertCanConfigureAgentSetup(req: Request, targetAgent: {
+    id: string; companyId: string; createdByUserId?: string | null; lifecycleState?: string; pauseReason?: string | null;
+  }) {
+    if (req.actor.type === "board" && req.actor.userId && targetAgent.createdByUserId === req.actor.userId
+      && targetAgent.lifecycleState === "paused" && targetAgent.pauseReason === "setup") {
+      await assertCanCreateAgentsForCompany(req, targetAgent.companyId);
+      return;
+    }
+    await assertCanUpdateAgent(req, targetAgent);
+  }
+
   async function assertCanReadAgent(req: Request, targetAgent: { id: string; companyId: string }) {
     if (!hasCompanyAccess(req, targetAgent.companyId)) {
       throw notFound("Agent not found");
@@ -4295,11 +4306,18 @@ export function agentRoutes(
       onboardingFirstAgent: hireOnboardingFirstAgent,
       // This intent flag is consumed below and must never reach agent create.
       inheritRuntimeFrom,
+      setupAgentId,
       runner: hireRunner,
       ...hireInput
     } = req.body;
 
-    const hiredAgentId = randomUUID();
+    if (setupAgentId) {
+      assertBoard(req);
+      const setupAgent = await svc.getById(setupAgentId);
+      if (!setupAgent || setupAgent.companyId !== companyId) throw notFound("Agent setup not found");
+      await assertCanConfigureAgentSetup(req, setupAgent);
+    }
+    const hiredAgentId = setupAgentId ?? randomUUID();
     const requestedHireConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertProviderTraceSettingTransition(req, hireInput.runtimeConfig);
     assertNoAgentAdapterConfigMutation(req, requestedHireConfig);
@@ -4459,6 +4477,7 @@ export function agentRoutes(
           lastHeartbeatAt: null,
         },
         {
+          setupAgentId,
           createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
           runnerResolved: true,
           responsibleUserId: responsibleUserForAiRequest(req),
@@ -4624,7 +4643,8 @@ export function agentRoutes(
       res.status(404).json({ error: "Company not found" });
       return;
     }
-    if (company.requireBoardApprovalForNewAgents) {
+    if (req.body.setupId) assertBoard(req);
+    if (company.requireBoardApprovalForNewAgents && !req.body.setupId) {
       throw conflict(
         "Direct agent creation requires board approval. Use POST /api/companies/:companyId/agent-hires to create a pending hire approval.",
       );
@@ -4643,10 +4663,11 @@ export function agentRoutes(
       // The onboarding marker is not an agent column. The server consumes it to
       // seed the chief-of-staff persona; it never reaches the insert values.
       onboardingFirstAgent: createOnboardingFirstAgent,
+      setupId,
       runner: createRunner,
       ...createInput
     } = req.body;
-    const agentId = randomUUID();
+    const agentId = setupId ?? randomUUID();
     const requestedCreateConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertProviderTraceSettingTransition(req, createInput.runtimeConfig);
     assertNoAgentAdapterConfigMutation(req, requestedCreateConfig);
@@ -4712,7 +4733,7 @@ export function agentRoutes(
     });
 
     const managedBinding = normalizedRuntimeConfig.aiConnection ? aiRuntimeConnectionBindingSchema.parse(normalizedRuntimeConfig.aiConnection) : undefined;
-    const managedConnection = managedBinding ? await validateManagedAgentBinding(req, companyId, agentId, createInput.adapterType, normalizedAdapterConfig, managedBinding, createInput.defaultEnvironmentId, false, true) : undefined;
+    const managedConnection = managedBinding && !setupId ? await validateManagedAgentBinding(req, companyId, agentId, createInput.adapterType, normalizedAdapterConfig, managedBinding, createInput.defaultEnvironmentId, false, true) : undefined;
     const createdAgent = await svcLifecycle.requestHire(
       companyId,
       {
@@ -4725,6 +4746,7 @@ export function agentRoutes(
         lastHeartbeatAt: null,
       },
       {
+        setupOnly: Boolean(setupId),
         createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
         runnerResolved: true,
         responsibleUserId: responsibleUserForAiRequest(req),
@@ -4769,7 +4791,7 @@ export function agentRoutes(
       },
     });
     const telemetryClient = getTelemetryClient();
-    if (telemetryClient) {
+    if (telemetryClient && !setupId) {
       trackAgentCreated(telemetryClient, { agentRole: agent.role, agentId: agent.id });
     }
 
@@ -5301,7 +5323,7 @@ export function agentRoutes(
     // one since disabled) stays allowed, so a disabled harness does not make an
     // existing agent uneditable.
     if (runner !== undefined) {
-      await assertCanUpdateAgent(req, existing);
+      await assertCanConfigureAgentSetup(req, existing);
       const config = hasOwn(patchData, "adapterConfig") ? { ...(replaceAdapterConfig ? {} : existing.adapterConfig), ...asRecord(patchData.adapterConfig) } : existing.adapterConfig;
       Object.assign(patchData, await resolveNewAgentRunnerForCompany(db, existing.companyId, {
         adapterType: typeof patchData.adapterType === "string" ? patchData.adapterType : existing.adapterType,
@@ -5448,13 +5470,18 @@ export function agentRoutes(
     }
     const nextAiBinding = aiRuntimeConnectionBindingSchema.safeParse(requestedRuntimeConfig?.aiConnection ?? existing.runtimeConfig.aiConnection).data;
     if (nextAiBinding) {
-      await assertCanUpdateAgent(req, existing);
+      await assertCanConfigureAgentSetup(req, existing);
       const changed = JSON.stringify(nextAiBinding) !== JSON.stringify(existing.runtimeConfig.aiConnection);
       const aiConfig = (patchData.adapterConfig ?? existing.adapterConfig) as Record<string, unknown>;
       if (nextAiBinding.mode !== "router" && !isAiConnectionCompatible(nextAiBinding, requestedAdapterType, aiConfig.model, aiConfig.provider, aiConfig.acpxAgent)) throw unprocessable("Select an AI connection compatible with the new harness and model");
       const copilotConfigurationChanged = requestedAdapterType === "paperclip_runner" && aiConfig.provider === "acpx" && aiConfig.acpxAgent === "copilot"
         && (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId"));
-      if (changed || copilotConfigurationChanged || (nextAiBinding.mode === "router" && requestedAdapterType !== existing.adapterType)) await validateManagedAgentBinding(req, existing.companyId, existing.id, requestedAdapterType, aiConfig, nextAiBinding, (patchData.defaultEnvironmentId !== undefined ? patchData.defaultEnvironmentId : existing.defaultEnvironmentId) as string | null, true);
+      if (changed || copilotConfigurationChanged || (nextAiBinding.mode === "router" && requestedAdapterType !== existing.adapterType)) {
+        const configuringSetup = existing.lifecycleState === "paused" && existing.pauseReason === "setup";
+        await validateManagedAgentBinding(req, existing.companyId, existing.id, requestedAdapterType, aiConfig, nextAiBinding,
+          (patchData.defaultEnvironmentId !== undefined ? patchData.defaultEnvironmentId : existing.defaultEnvironmentId) as string | null,
+          !configuringSetup, configuringSetup);
+      }
     }
     if (requestedRuntimeConfig) patchData.runtimeConfig = requestedRuntimeConfig;
     if (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")) {
@@ -5476,7 +5503,7 @@ export function agentRoutes(
     if (profileOnlyChange) {
       await assertCanApplyAgentProfileChange(req, existing);
     } else {
-      await assertCanUpdateAgent(req, existing);
+      await assertCanConfigureAgentSetup(req, existing);
     }
 
     const actor = getActorInfo(req);

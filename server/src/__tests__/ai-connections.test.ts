@@ -2177,6 +2177,33 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     }
   });
 
+  it("saves a restricted shared connection during setup and installs it only when setup finishes", async () => {
+    const { requireServerAdapter } = await import("../adapters/index.js");
+    const setupId = randomUUID();
+    const account = await service.save(companyId, "alice", { provider: "anthropic", method: "api_key", ownership: "shared", name: "Shared setup", apiKey: "fixture", agentIds: [], allAgents: false }, "fixture-setup-key");
+    const selected = { provider: "anthropic", method: "api_key", mode: "shared", ...account } as const;
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "alice", companyIds: [companyId] }; next(); });
+    app.use("/api", agentRoutes(db));
+    app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
+    const initial = await request(app).post(`/api/companies/${companyId}/agents`).send({ setupId, name: "Shared setup agent", adapterType: "claude_local", runner: "legacy" });
+    expect(initial.status, JSON.stringify(initial.body)).toBe(201);
+    const probe = vi.spyOn(requireServerAdapter("claude_local"), "testEnvironment");
+    try {
+      const saved = await request(app).patch(`/api/agents/${setupId}`).send({ runtimeConfig: { aiConnection: selected } });
+      expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+      expect(saved.body).toMatchObject({ pauseReason: "setup", runtimeConfig: { aiConnection: selected } });
+      expect(probe).not.toHaveBeenCalled();
+      expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.targetId, setupId))).toHaveLength(0);
+      const finished = await request(app).post(`/api/companies/${companyId}/agent-hires`).send({
+        setupAgentId: setupId, name: "Shared setup agent", adapterType: "claude_local", runner: "legacy", runtimeConfig: { aiConnection: selected },
+      });
+      expect(finished.status, JSON.stringify(finished.body)).toBe(201);
+      expect(finished.body.agent.id).toBe(setupId);
+      expect(await db.select().from(toolConnectionInstalls).where(and(eq(toolConnectionInstalls.connectionId, account.connectionId), eq(toolConnectionInstalls.targetId, setupId)))).toHaveLength(1);
+    } finally { probe.mockRestore(); }
+  });
+
   it("creates and hires agents with an authorized restricted shared connection", async () => {
     const { agentRoutes } = await import("../routes/agents.js");
     await db.update(companies).set({ requireBoardApprovalForNewAgents: false }).where(eq(companies.id, companyId));

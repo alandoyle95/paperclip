@@ -34,7 +34,7 @@ export async function prepareAgentHire(db: Db, companyId: string, input: CreateA
     .select({ id: agents.id, name: agents.name, status: agents.status })
     .from(agents)
     .where(eq(agents.companyId, companyId));
-  const uniqueName = deduplicateAgentName(data.name, existingAgents);
+  const uniqueName = deduplicateAgentName(data.name, existingAgents.filter(agent => agent.id !== options?.setupAgentId));
 
   const role = data.role ?? "general";
   const normalizedPermissions = normalizeAgentPermissions(data.permissions, { context: "create" });

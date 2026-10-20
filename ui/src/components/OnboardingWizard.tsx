@@ -730,6 +730,11 @@ function OnboardingWizardInner({
     string | null
   >((saved?.createdCompanyPrefix as string) ?? null);
   const [createdAgentId, setCreatedAgentId] = useState<string | null>((saved?.createdAgentId as string) ?? null);
+  const [setupAgentId, setSetupAgentId] = useState<string | null>((saved?.setupAgentId as string) ?? null);
+  const [setupPrepared, setSetupPrepared] = useState(false);
+  const [setupError, setSetupError] = useState(false);
+  const [setupAttempt, setSetupAttempt] = useState(0);
+  const preparingSetup = useRef(false);
   const [createdCompanyGoalId, setCreatedCompanyGoalId] = useState<string | null>(
     (saved?.createdCompanyGoalId as string) ?? null
   );
@@ -819,6 +824,9 @@ function OnboardingWizardInner({
     setCreatedProjectId(null);
     setCreatedIssueRef(null);
     setCreatedAgentId(null);
+    setSetupAgentId(null);
+    setSetupPrepared(false);
+    setSetupError(false);
   }
 
   // Sync step and company when onboarding opens with explicit options.
@@ -929,7 +937,7 @@ function OnboardingWizardInner({
       onboardingCopilot: isCopilot,
       // The mode, never the key: this blob is localStorage.
       credentialMode, credentialModeChoice,
-      createdCompanyId, createdCompanyPrefix, createdAgentId,
+      createdCompanyId, createdCompanyPrefix, createdAgentId, setupAgentId,
       createdCompanyGoalId, createdProjectId, createdIssueRef,
     };
     onboardingDraftStorage.write(JSON.stringify(state));
@@ -937,7 +945,7 @@ function OnboardingWizardInner({
     effectiveOnboardingOpen, step, companyName,
     agentName, agentAppearance, agentRole, adapterType, runner, cwd, model, command, args, url,
     credentialMode, credentialModeChoice,
-    createdCompanyId, createdCompanyPrefix, createdAgentId,
+    createdCompanyId, createdCompanyPrefix, createdAgentId, setupAgentId,
     createdCompanyGoalId, createdProjectId, createdIssueRef,
   ]);
 
@@ -1109,7 +1117,7 @@ function OnboardingWizardInner({
     provider: managedSubscriptionProvider ?? "anthropic", method: "subscription",
     name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`,
     ownership: "personal", agentIds: [], allAgents: true,
-  }, effectiveOnboardingOpen && step === 4 && canUseLocalLogin && credentialMode !== "api" &&
+  }, (setupPrepared || Boolean(createdAgentId)) && effectiveOnboardingOpen && step === 4 && canUseLocalLogin && credentialMode !== "api" &&
     Boolean(managedProvider) && !savedSubscription && !savedKeys.storedLogin.data && !managedBindingForStep(),
   );
   useEffect(() => {
@@ -1263,7 +1271,40 @@ function OnboardingWizardInner({
    * Anything that gates this step belongs in here, so the next one is added
    * once rather than twice.
    */
-  const connectStepReady = sourceSelected && !adapterEnvLoading && !savedKeys.loading && runnerDiscoveryReady && (!isCopilot || copilotModelReady);
+  const connectStepReady = Boolean(setupPrepared || createdAgentId) && sourceSelected && !adapterEnvLoading && !savedKeys.loading && runnerDiscoveryReady && (!isCopilot || copilotModelReady);
+
+  useEffect(() => {
+    if (step !== 4 || !createdCompanyId || !sourceSelected
+      || createdAgentId || setupPrepared || preparingSetup.current || setupError) return;
+    preparingSetup.current = true;
+    const companyId = createdCompanyId;
+    const id = setupAgentId ?? crypto.randomUUID();
+    setSetupAgentId(id);
+    void (async () => {
+      if (!setupAgentId) {
+        const existing = (await agentsApi.list(companyId)).find(agent =>
+          agent.status !== "terminated" && agent.name.trim().toLowerCase() === agentName.trim().toLowerCase()
+          && agentHarnessType(agent.adapterType, agent.adapterConfig) === agentHarnessType(adapterType, isCopilot ? { provider: "acpx", acpxAgent: "copilot" } : {}));
+        if (existing) return existing;
+      }
+      return agentsApi.create(companyId, {
+      setupId: id, name: agentName.trim() || AGENT_ROLE_LABELS[agentRole], appearance: agentAppearance,
+      role: agentRole, adapterType, runner,
+      adapterConfig: isCopilot ? { provider: "acpx", acpxAgent: "copilot" } : {},
+      onboardingFirstAgent: true, runtimeConfig: buildNewAgentRuntimeConfig({ heartbeatEnabled: false }),
+      });
+    })().then(agent => {
+      if (!stillTheSameCompany(companyId)) return;
+      if (agent.pauseReason === "setup") setSetupAgentId(agent.id);
+      else setCreatedAgentId(agent.id);
+      setSetupPrepared(true);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
+    }).catch(cause => {
+      if (!stillTheSameCompany(companyId)) return;
+      setSetupError(true);
+      setError(cause instanceof Error ? cause.message : "Could not create agent setup.");
+    }).finally(() => { preparingSetup.current = false; });
+  }, [step, createdCompanyId, sourceSelected, runnerDiscoveryReady, createdAgentId, setupPrepared, setupAttempt]);
 
   /**
    * Whether this step has a sign-in to do before it can hire.
@@ -1313,7 +1354,7 @@ function OnboardingWizardInner({
   */
   const connectCollapsed =
     connectPhase !== "idle" && connectPhase !== "unwindRow" && sourceSelected;
-  const connectProgress = adapterEnvLoading ? "Testing connection…" : loading ? "Connecting…" : null;
+  const connectProgress = sourceSelected && !setupPrepared && !createdAgentId && !setupError ? "Creating your agent…" : adapterEnvLoading ? "Testing connection…" : loading ? "Connecting…" : null;
   const hasSavedSubscription = Boolean(savedSubscription || savedKeys.storedLogin.data ||
     (credentialMode !== "api" && managedBindingForStep()));
   const connectHasCard = credentialMode === "api" || connectStepNeedsLogin || connectStepHasNoSandbox || Boolean(connectProgress);
@@ -1457,7 +1498,7 @@ function OnboardingWizardInner({
    */
   const connectSourceLabel = isCopilot ? "GitHub Copilot" : CONNECT_SOURCE_NAMES[adapterType] ?? adapterType;
   const connectCta: { label: string; icon: FooterPrimaryIcon; disabled: boolean } =
-    connectProgress
+    setupError ? { label: "Retry", icon: "arrow", disabled: false } : connectProgress
       ? { label: adapterEnvLoading ? "Testing…" : connectProgress, icon: "spinner", disabled: true }
       : connectPhase === "waiting"
       ? { label: "Waiting for code", icon: "spinner", disabled: true }
@@ -1518,6 +1559,7 @@ function OnboardingWizardInner({
    * it is meant to start, against a source with no credential.
    */
   function handleConnectStepPrimary() {
+    if (setupError) { setSetupError(false); setSetupAttempt(value => value + 1); setError(null); return; }
     // Mid-sequence the button belongs to the sign-in, not to the step.
     if (connectPhase === "ready" && connectStepNeedsLogin) {
       if (connectAuthUrl) window.open(connectAuthUrl, "_blank", "noreferrer,noopener");
@@ -1737,6 +1779,9 @@ function OnboardingWizardInner({
     setCreatedCompanyId(null);
     setCreatedCompanyPrefix(null);
     setCreatedAgentId(null);
+    setSetupAgentId(null);
+    setSetupPrepared(false);
+    setSetupError(false);
     setCreatedCompanyGoalId(null);
     setCreatedProjectId(null);
     setCreatedIssueRef(null);
@@ -2177,6 +2222,7 @@ function OnboardingWizardInner({
   // doesn't hire a second agent.
   async function handleGiveHeartbeat() {
     if (!createdCompanyId) return;
+    if (!setupPrepared && !createdAgentId) return;
     if (isCopilot && (!copilotOnboardingEnabled || !sourceSelected || !copilotModelReady)) {
       setError("Connect GitHub Copilot and select an available model before creating this agent.");
       return;
@@ -2336,10 +2382,11 @@ function OnboardingWizardInner({
       // walks the step twice ends up with "Ada" and "Ada 2". An agent with the
       // same name on the same source is that agent: adopt it and move on to
       // Review, the way a run that remembers its hire does.
-      const existingAgents = await agentsApi.list(createdCompanyId).catch(() => null);
+      const existingAgents = setupAgentId ? null : await agentsApi.list(createdCompanyId).catch(() => null);
       if (!isCurrent()) return;
       const existing = existingAgents?.find(
         (agent) =>
+          agent.id !== setupAgentId &&
           agent.name.trim().toLowerCase() === hireName.toLowerCase() &&
           agentHarnessType(agent.adapterType, agent.adapterConfig) === agentHarnessType(adapterType, hireAdapterConfig),
       );
@@ -2358,6 +2405,7 @@ function OnboardingWizardInner({
       // Once submitted, this existing API has no rollback contract; navigation
       // can only suppress its completion, just as it does for a manual hire.
       const hire = await agentsApi.hire(createdCompanyId, {
+        ...(setupAgentId ? { setupAgentId } : {}),
         // The name is optional; an agent that reaches here without one is
         // named for the job it was hired to do rather than left blank.
         name: hireName,

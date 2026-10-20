@@ -134,6 +134,17 @@ describe("AgentActionButtons", () => {
     );
   }
 
+  it("returns unfinished agents to setup instead of resuming execution", async () => {
+    render(makeAgent({ status: "paused", lifecycleState: "paused", pauseReason: "setup" }));
+    await flushReact();
+    const finish = [...container.querySelectorAll("button")].find(button => button.textContent === "Finish setup");
+    expect(finish).toBeTruthy();
+    expect([...container.querySelectorAll("button")].some(button => button.textContent === "Resume")).toBe(false);
+    await act(() => finish!.click());
+    expect(mockNavigate).toHaveBeenCalledWith(expect.stringContaining("setupAgentId=agent-1"));
+    expect(mockAgentsApi.resume).not.toHaveBeenCalled();
+  });
+
   it.each(["preparing", "verifying", "resuming"] as const)("offers pause rather than resume during %s", async lifecycleState => {
     render(makeAgent({ status: "paused", lifecycleState }));
     await flushReact();
