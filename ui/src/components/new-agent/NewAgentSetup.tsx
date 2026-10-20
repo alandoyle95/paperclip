@@ -688,7 +688,7 @@ function Setup({
         ? await runTest()
         : preparedConfig();
       if (!config) return;
-      const saved = Object.keys(credentials).length ? await saveDraft(connection, false, config) : undefined;
+      if (Object.keys(credentials).length) await saveDraft(connection, false, config);
       const response = await agentsApi.hire(companyId, {
         setupAgentId: created.id,
         name: created.name,
@@ -697,7 +697,7 @@ function Setup({
         reportsTo: created.reportsTo,
         adapterType: requestAdapterType,
         ...(["codex_local", "claude_local"].includes(adapterType) && runner !== "auto" ? { runner } : {}),
-        adapterConfig: saved?.adapterConfig ?? config,
+        adapterConfig: config,
         defaultEnvironmentId:
           environmentOverride ||
           (forced.forced || managedOnly ? environmentId : null),

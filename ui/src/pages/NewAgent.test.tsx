@@ -725,11 +725,20 @@ describe("New agent setup", () => {
     expect(container.textContent).toContain("Enter the Kimi API model name");
     await fill("Kimi API model name", "kimi-for-coding");
     await fill("Kimi API base URL", "https://api.kimi.com/coding/v1");
+    const persist = api.update.getMockImplementation()!;
+    api.update.mockImplementationOnce(async (...args) => {
+      const saved = await persist(...args);
+      return { ...saved, adapterConfig: { ...saved.adapterConfig, env: Object.fromEntries(
+        Object.entries(saved.adapterConfig.env).map(([key, binding]) => [key,
+          (binding as { type: string }).type === "plain" ? { type: "plain", value: "***REDACTED***" } : binding]),
+      ) } };
+    });
     await click("Finish setup");
     const config = api.hire.mock.calls[0][1].adapterConfig;
     expect(config).not.toHaveProperty("model");
     expect(config.env).toMatchObject({
       KIMI_MODEL_NAME: { type: "plain", value: "kimi-for-coding" },
+      KIMI_MODEL_PROVIDER_TYPE: { type: "plain", value: "kimi" },
       KIMI_MODEL_BASE_URL: { type: "plain", value: "https://api.kimi.com/coding/v1" },
       KIMI_MODEL_API_KEY: { type: "secret_ref", secretId: "org-secret-1" },
     });
