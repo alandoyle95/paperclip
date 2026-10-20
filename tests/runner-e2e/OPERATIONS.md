@@ -146,3 +146,22 @@ agent streams, tools, continuation, cancellation, native traces, and remote rout
 is required before treating those routes as operationally proven. Forecasts,
 provider reconciliation, and the campaign feedback disposition workflow are
 separate remaining integration work.
+
+### Setup and agent request attribution
+
+Each admitted attempt creates a private phase checkpoint under
+`<ledgerPath>.attempts/`. The launcher passes its path only to the test worker;
+the Paperclip server does not inherit it. Before fixture setup finishes,
+requests are recorded as `setup`, including connection checks and hello probes.
+The worker atomically advances the checkpoint to `agent` immediately after
+fixture creation and before task execution. Cleanup does not reset this phase,
+so late agent requests retain their task attribution.
+
+The gateway reads and validates the checkpoint for each request before reserving
+spend. That admission fixes the request's phase even if the phase changes while
+its response streams. Missing, malformed, or foreign-attempt checkpoints stop
+new dispatches rather than guessing a phase. Request records remain in the
+fsynced journal after the worker exits. This boundary applies to the admitted
+local core cells; it does not establish coverage for separate judges, paid tools,
+child-agent attribution, or remote routes. Historical journals retain their
+original attribution and are not retroactively rewritten.

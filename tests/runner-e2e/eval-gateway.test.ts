@@ -1,9 +1,10 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { connect } from "node:net";
 import { afterEach, expect, it, vi } from "vitest";
 import { openEvalCostLedger, readEvalCostLedger } from "./cost-ledger.js";
+import { beginEvalAgentPhase, createEvalAttemptPhase, readEvalAttemptPhase } from "./attempt-phase.js";
 import { evalRequestReservation, EvalUsageStream, forwardEvalRequest, startEvalGateway, type EvalGatewayRoute, type EvalGatewayReceipt } from "./eval-gateway.js";
 const directories: string[] = [], closes: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of closes.splice(0).reverse()) await close(); for (const dir of directories.splice(0)) await rm(dir, { recursive: true, force: true }); });
@@ -222,4 +223,50 @@ it("forwards Claude's Messages beta query without admitting unrelated endpoints 
   expect(transport.mock.calls[0]![0]).toBe("https://api.anthropic.com/v1/messages?beta=true");
   expect(transport.mock.calls[0]![1]!.headers).toMatchObject({ "anthropic-beta": "fixture-beta" });
   expect(f.ledger.snapshot()).toMatchObject({ unknownRequests: 0, inflight: 0 });
+});
+
+it("attributes setup at admission, preserves it during execution, and blocks missing phase evidence", async () => {
+  const f = await fixture();
+  const phasePath = path.join(path.dirname(f.file), "phase.json");
+  await createEvalAttemptPhase(phasePath, identity);
+  const env = { PAPERCLIP_E2E_GATEWAY_PHASE_PATH: phasePath, PAPERCLIP_E2E_ACCOUNTING_ATTEMPT_ID: identity.attemptId };
+  let started!: () => void, release!: () => void, calls = 0;
+  const firstStarted = new Promise<void>(resolve => { started = resolve; });
+  const continuation = new Promise<void>(resolve => { release = resolve; });
+  const gateway = await startEvalGateway({ ...f, resolveIdentity: () => readEvalAttemptPhase(phasePath, identity),
+    transport: async () => {
+      calls++;
+      if (calls === 1) { started(); await continuation; }
+      return Response.json({ ...usage, id: `provider-${calls}` }, { headers: { "x-bt-used-endpoint": "OPENAI_API_KEY" } });
+    },
+  });
+  closes.push(() => gateway.close());
+  const send = () => fetch(`${gateway.baseUrl}/responses`, { method: "POST", headers: { authorization: `Bearer ${gateway.token}` }, body: JSON.stringify(f.payload) });
+  const first = send();
+  await firstStarted;
+  await beginEvalAgentPhase(identity.executionId, env);
+  release();
+  expect((await first).status).toBe(200);
+  expect((await send()).status).toBe(200);
+  expect(f.ledger.snapshot().requests.map(request => request.phase)).toEqual(["setup", "agent"]);
+  await writeFile(phasePath, JSON.stringify({ version: 1, ...identity, attemptId: "foreign-attempt" }));
+  expect((await send()).status).toBe(503);
+  expect(calls).toBe(2);
+  expect((await readEvalCostLedger(f.file)).state.snapshot().requests.map(request => request.phase)).toEqual(["setup", "agent"]);
+});
+
+it("refuses missing or unreviewed attribution checkpoints before request dispatch", async () => {
+  const f = await fixture(), transport = vi.fn<typeof fetch>();
+  const phasePath = path.join(path.dirname(f.file), "missing-phase.json");
+  const gateway = await startEvalGateway({ ...f, transport, resolveIdentity: () => readEvalAttemptPhase(phasePath, identity) });
+  closes.push(() => gateway.close());
+  const response = await fetch(`${gateway.baseUrl}/responses`, { method: "POST", headers: { authorization: `Bearer ${gateway.token}` }, body: JSON.stringify(f.payload) });
+  expect(response.status).toBe(503);
+  expect(transport).not.toHaveBeenCalled();
+  expect(f.ledger.snapshot().requests).toEqual([]);
+  await expect(beginEvalAgentPhase(identity.executionId, { PAPERCLIP_E2E_GATEWAY_BASE_URL: gateway.baseUrl })).rejects.toThrow("Missing eval phase");
+  await createEvalAttemptPhase(phasePath, identity);
+  await expect(createEvalAttemptPhase(phasePath, identity)).rejects.toThrow();
+  await writeFile(phasePath, JSON.stringify({ version: 1, ...identity, providerResponse: "private" }));
+  await expect(readEvalAttemptPhase(phasePath, identity)).rejects.toThrow("Invalid eval phase");
 });

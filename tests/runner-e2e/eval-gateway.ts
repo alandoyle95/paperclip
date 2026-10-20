@@ -200,7 +200,9 @@ async function requestJson(req: IncomingMessage) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-export async function startEvalGateway(input: Omit<Parameters<typeof forwardEvalRequest>[0], "payload" | "onHeaders" | "onChunk" | "signal" | "anthropicBeta" | "anthropicBetaQuery">) {
+export async function startEvalGateway(input: Omit<Parameters<typeof forwardEvalRequest>[0], "payload" | "onHeaders" | "onChunk" | "signal" | "anthropicBeta" | "anthropicBetaQuery"> & {
+  resolveIdentity?: () => Promise<EvalChargeIdentity>;
+}) {
   const token = randomBytes(32).toString("hex"), pending = new Set<Promise<void>>(), controllers = new Set<AbortController>();
   let closed = false, poisoned = false;
   const respond = (res: ServerResponse, status: number, code: string) => {
@@ -223,7 +225,9 @@ export async function startEvalGateway(input: Omit<Parameters<typeof forwardEval
         let payload: unknown;
         try { payload = await requestJson(req); }
         catch { respond(res, 400, "invalid_request_body"); return; }
-        const receipt = await forwardEvalRequest({ ...input, payload, signal: abort.signal,
+        const identity = input.resolveIdentity ? await input.resolveIdentity() : input.identity;
+        if (identity.executionId !== input.identity.executionId || identity.attemptId !== input.identity.attemptId) throw new Error("Invalid eval request attribution");
+        const receipt = await forwardEvalRequest({ ...input, identity, payload, signal: abort.signal,
           anthropicBeta: typeof req.headers["anthropic-beta"] === "string" ? req.headers["anthropic-beta"] : undefined,
           anthropicBetaQuery: input.route.provider === "anthropic" && req.url?.endsWith("?beta=true"),
           onHeaders: (status, headers) => { res.writeHead(status, headers); },

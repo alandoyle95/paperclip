@@ -1,5 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { createHash } from "node:crypto";
+import { createEvalAttemptPhase, readEvalAttemptPhase } from "./attempt-phase.js";
 import { EvalSpendState, openEvalCostLedger, type EvalSpendLimits } from "./cost-ledger.js";
 import { evalRequestReservation, startEvalGateway, type EvalGatewayRoute, type EvalGatewayReceipt } from "./eval-gateway.js";
 import type { MatrixExecution } from "./types.js";
@@ -56,6 +58,8 @@ export async function openEvalOperations(file: string, executions: readonly Matr
   if (required.some(name => !env[name]?.trim())) throw new Error("Missing eval gateway upstream credential");
   const receiptDirectory = `${manifest.ledgerPath}.requests`;
   await mkdir(receiptDirectory, { recursive: true, mode: 0o700 });
+  const phaseDirectory = `${manifest.ledgerPath}.attempts`;
+  await mkdir(phaseDirectory, { recursive: true, mode: 0o700 });
   const ledger = await openEvalCostLedger(manifest.ledgerPath, { ...manifest.limits, maxAttemptsPerExecution: manifest.maxAttemptsPerExecution });
   const active = new Set<Awaited<ReturnType<typeof startEvalGateway>>>();
   const atomicJson = async (file: string, value: unknown) => {
@@ -74,12 +78,15 @@ export async function openEvalOperations(file: string, executions: readonly Matr
         apiKey: env[manifest.route === "braintrust" ? "BRAINTRUST_API_KEY" : execution.profile.credential] ?? "" };
       if (!route.apiKey) throw new Error("Missing eval gateway upstream credential");
       await ledger.admitAttempt(execution.id, attemptId);
+      const identity = { executionId: execution.id, attemptId, phase: "setup" as const };
+      const phasePath = path.join(phaseDirectory, `${createHash("sha256").update(attemptId).digest("hex")}.json`);
+      await createEvalAttemptPhase(phasePath, { executionId: execution.id, attemptId });
       const gateway = await startEvalGateway({ ledger, route,
-        identity: { executionId: execution.id, attemptId, phase: "agent" }, deadlineAt: Date.parse(manifest.limits.deadlineAt),
+        identity, resolveIdentity: () => readEvalAttemptPhase(phasePath, identity), deadlineAt: Date.parse(manifest.limits.deadlineAt),
         persist: (receipt: EvalGatewayReceipt) => atomicJson(path.join(receiptDirectory, `${receipt.requestId}.json`), receipt),
       });
       active.add(gateway);
-      return { ...gateway, async close() { if (!active.delete(gateway)) return; await gateway.close(); } };
+      return { ...gateway, phasePath, async close() { if (!active.delete(gateway)) return; await gateway.close(); } };
     },
     async close() {
       const results = await Promise.allSettled([...active].map(gateway => gateway.close())); active.clear();

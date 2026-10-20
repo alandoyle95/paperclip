@@ -53,6 +53,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { RunnerApi, pollUntil } from "./api.js";
 import { buildRuntimeUsage, summarizeExecutionBilling } from "./billing.js";
 import { collectAttemptFeedback, emptyFeedbackSummary } from "./feedback.js";
+import { beginEvalAgentPhase } from "./attempt-phase.js";
 import { establishPublicMcpSession, runPublicMcpFlow } from "./public-mcp-flow.js";
 import { assistantUsage } from "./public-mcp-model.js";
 import { runnerExecutionById } from "./catalog.js";
@@ -931,6 +932,7 @@ for (const execution of executions) {
         daytonaImage: process.env.PAPERCLIP_E2E_DAYTONA_IMAGE,
         onCompanyCreated,
       });
+      await beginEvalAgentPhase(execution.id);
       trace?.phase("execution");
 
       if (["native-completion", NATIVE_INSTRUCTION_SUITE].includes(execution.suite.id)) {

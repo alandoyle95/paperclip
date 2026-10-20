@@ -7,6 +7,7 @@ import { validateEvalOperationsManifest, openEvalOperations, type EvalOperations
 import { setupLiveFixtures } from "./live-fixtures.js";
 import { createAiConnectionSchema, aiConnectionBindingSchema } from "../../packages/shared/src/ai-connections.js";
 import type { RunnerApi } from "./api.js";
+import { beginEvalAgentPhase, readEvalAttemptPhase } from "./attempt-phase.js";
 const cell = runnerMatrix.find(e => e.suite.id === "core-compatibility" && e.profile.id === "runner-codex" && e.environment.id === "local")!;
 function manifest(): EvalOperationsManifest {
   return { version: 1, limits: { campaignId: "pilot", maxUsd: "100", deadlineAt: new Date(Date.now() + 60_000).toISOString(), maxRequests: 20, maxConcurrent: 1 },
@@ -38,6 +39,9 @@ it("retains a campaign summary and refuses changing its budget on restart", asyn
     const operations = await openEvalOperations(file, [cell], 0, { OPENAI_API_KEY: "private-fixture" });
     const endpoint = await operations.start(cell, "attempt", 1);
     expect(endpoint.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:/);
+    expect(await readEvalAttemptPhase(endpoint.phasePath, { executionId: cell.id, attemptId: "attempt" })).toMatchObject({ phase: "setup" });
+    await beginEvalAgentPhase(cell.id, { PAPERCLIP_E2E_GATEWAY_PHASE_PATH: endpoint.phasePath, PAPERCLIP_E2E_ACCOUNTING_ATTEMPT_ID: "attempt" });
+    expect(await readEvalAttemptPhase(endpoint.phasePath, { executionId: cell.id, attemptId: "attempt" })).toMatchObject({ phase: "agent" });
     await endpoint.close(); await operations.close();
     expect(JSON.parse(await readFile(`${value.ledgerPath}.summary.json`, "utf8"))).toMatchObject({ limitUsd: "100.000000000", knownUsd: "0.000000000", requests: [] });
     const resumed = await openEvalOperations(file, [cell], 0, { OPENAI_API_KEY: "private-fixture" });

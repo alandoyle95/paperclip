@@ -591,6 +591,7 @@ async function runAttempt(input: {
       childEnv[execution.profile.credential] = gateway.token;
       childEnv.PAPERCLIP_E2E_GATEWAY_BASE_URL = gateway.baseUrl;
       childEnv.PAPERCLIP_E2E_GATEWAY_TOKEN = gateway.token;
+      childEnv.PAPERCLIP_E2E_GATEWAY_PHASE_PATH = gateway.phasePath;
     }
     // The database URLs are stripped here and again at the Playwright web-server
     // boundary so a developer's shell can never redirect this paid test.

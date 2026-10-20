@@ -12,6 +12,7 @@ const AMBIENT_PAPERCLIP_CREDENTIAL_KEYS = [
   "PAPERCLIP_AGENT_API_KEY",
   "PAPERCLIP_TASK_BRIDGE_TOKEN",
   "PAPERCLIP_E2E_GATEWAY_TOKEN",
+  "PAPERCLIP_E2E_GATEWAY_PHASE_PATH",
   "PAPERCLIP_SETUP_TOKEN",
   "PAPERCLIP_SECRETS_MASTER_KEY",
   "PAPERCLIP_SECRETS_MASTER_KEY_FILE",
@@ -111,6 +112,7 @@ export function buildRunnerE2EProcessEnvironment(
   const installed = usesInstalledCli(source);
   if (installed) assertInstalledCliSelection(source, executions);
   const result = { ...source };
+  delete result.PAPERCLIP_E2E_GATEWAY_PHASE_PATH;
   // Announcements are unrelated to the scenarios and obscure screenshot evidence.
   result.PAPERCLIP_ANNOUNCEMENTS_ENABLED = "false";
   delete result.OPENCODE_ALLOW_ALL_MODELS;
