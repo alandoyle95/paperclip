@@ -54,6 +54,7 @@ function receipt(result: RunnerE2EResult): RunnerE2EAttemptReceipt {
     status: result.status,
     cleanup: result.cleanup,
     billing: summarizeExecutionBilling(result),
+    ...(result.feedback ? { feedback: result.feedback } : {}),
   };
 }
 

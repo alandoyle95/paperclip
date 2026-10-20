@@ -124,6 +124,16 @@ const billing = shape({
   observedAndEstimatedCostUsd: nullable(number),
   complete: boolean,
 });
+const feedback = shape({
+  version: (value, at) => { if (value !== 1) invalid(at); },
+  collection: oneOf("complete", "partial", "unavailable", "not_started"),
+  invocationCollection: oneOf("complete", "partial", "unavailable", "not_started"),
+  toolAvailability: oneOf("observed", "unknown"),
+  complaints: integer, suggestions: integer, bodiesCollected: integer, runsInspected: integer,
+  invocations: shape({ completed: integer, failed: integer, unknown: integer }),
+  review: array(shape({ fingerprint: (value, at) => { if (typeof value !== "string" || !/^[a-f0-9]{64}$/.test(value)) invalid(at); },
+    kind: oneOf("complaint", "suggestion"), occurrences: integer, disposition: oneOf("needs_investigation") })),
+});
 
 export function validateCampaignAccounting(value: RunnerE2ECampaignAccounting) {
   shape({
@@ -134,7 +144,7 @@ export function validateCampaignAccounting(value: RunnerE2ECampaignAccounting) {
     attempts: array(shape({
       id: string, executionId: string, attempt: integer,
       startedAt: date, finishedAt: date, durationMs: number,
-      status: oneOf("passed", "failed"), cleanup: oneOf("not_started", "passed", "failed"), billing,
+      status: oneOf("passed", "failed"), cleanup: oneOf("not_started", "passed", "failed"), billing, feedback: optional(feedback),
     })),
   })(value, "accounting");
   if (new Set(value.attempts.map(attempt => attempt.id)).size !== value.attempts.length) invalid("accounting.attempts duplicate id");
@@ -250,6 +260,7 @@ const fields = {
   usage: optional(nullable(object)),
   runtimeUsage: optional(runtime),
   billing: optional(billing),
+  feedback: optional(feedback),
   matcherResults: optional(
     array(shape({ matcher, passed: boolean, detail: string })),
   ),

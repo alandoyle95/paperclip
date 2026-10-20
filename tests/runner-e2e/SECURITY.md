@@ -415,3 +415,14 @@ limits, case/task state and correlated receipt checks enter workflow evidence.
 Two passive seed cases support browser list assertions; screenshots remain on
 the exact primary case/task routes and document dialogs preserve that case URL.
 The public screenshot allowlist is unchanged.
+
+## Eval feedback capture
+
+`snapshots/agent-feedback.json` retains company-wide complaint/suggestion bodies
+and attributed invocation outcomes in the access-controlled Actions artifact.
+It passes the existing credential scanner and is excluded from public history
+like other snapshots. Normalized results and campaign attempt receipts contain
+only numeric counts, closed collection statuses, and SHA-256 fingerprints for
+review grouping. Public reports never copy feedback bodies, previews, tool
+arguments, or free-form collection errors. Collecting feedback performs no new
+model call and does not forward it to an external service.

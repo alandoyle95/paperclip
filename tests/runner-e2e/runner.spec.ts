@@ -51,6 +51,7 @@ import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { RunnerApi, pollUntil } from "./api.js";
 import { buildRuntimeUsage, summarizeExecutionBilling } from "./billing.js";
+import { collectAttemptFeedback, emptyFeedbackSummary } from "./feedback.js";
 import { establishPublicMcpSession, runPublicMcpFlow } from "./public-mcp-flow.js";
 import { assistantUsage } from "./public-mcp-model.js";
 import { runnerExecutionById } from "./catalog.js";
@@ -617,6 +618,7 @@ for (const execution of executions) {
     let issue: IssueRecord | undefined;
     let workflowCase: { id: string; identifier?: string } | undefined;
     let selectedRuns: RunRecord[] = [];
+    let feedback = emptyFeedbackSummary();
     let runtimeLeases: EnvironmentLeaseRecord[] = [];
     let matcherResults: MatcherResult[] = [];
     let downloadedResponseProof: Awaited<ReturnType<typeof readResponseProof>> | undefined;
@@ -3075,7 +3077,24 @@ for (const execution of executions) {
               }
             },
             assertions: beforeEnvironmentTeardownAssertions,
-            teardown: () => fixtures!.teardown(),
+            teardown: async () => {
+              // Cancellation and cleanup assertions may fail. Still capture
+              // company-wide feedback before the rows cascade with teardown.
+              try {
+                feedback = await collectAttemptFeedback({ api, companyId: fixtures!.company.id,
+                  persist: async evidence => {
+                    feedback = structuredClone(evidence.summary);
+                    await writeSanitizedJson(snapshotsDir, "agent-feedback.json", evidence, secrets);
+                  },
+                });
+              } catch {
+                feedback.collection = feedback.bodiesCollected ? "partial" : "unavailable";
+                feedback.invocationCollection = "unavailable";
+                networkDiagnostics.push({ feedbackCaptureError: "feedback_evidence_write_failed" });
+              } finally {
+                await fixtures!.teardown();
+              }
+            },
           });
           matcherResults.push(...verification.checks.map(check => ({
             matcher: { kind: "json_path" as const, path: `remoteCleanup.${check.id}`, expected: true }, passed: check.passed, detail: check.detail,
@@ -3202,6 +3221,7 @@ for (const execution of executions) {
                 })),
               },
         runtimeUsage,
+        feedback,
         matcherResults,
         screenshots,
         cleanup,

@@ -11,6 +11,7 @@ import {
 import { runnerMatrix } from "./catalog.js";
 import { billingCoverageLabel, summarizeExecutionBilling } from "./billing.js";
 import { isSelectedCarryForward, retainedCampaignAttempts } from "./attempt-accounting.js";
+import { summarizeCampaignFeedback } from "./feedback.js";
 import { renderRunnerE2EDashboard } from "./dashboard.js";
 import {
   buildRunnerCampaign,
@@ -314,6 +315,7 @@ async function main() {
     excludedArtifacts: excludedArtifacts + retained.excludedArtifacts,
   });
   const billing = campaign.billing;
+  const feedback = summarizeCampaignFeedback(campaign.accounting?.attempts ?? campaign.results);
   const normalized = {
     ...campaign,
     results: selected.map((entry, index) => ({
@@ -377,6 +379,8 @@ async function main() {
     `Provider-reported LLM cost: ${billingCoverageLabel(`$${billing.reportedLlmCostUsd.toFixed(6)}`, billing.llm.runsWithReportedCost, billing.llm.runCount)}`,
     `Estimated LLM cost: ${billingCoverageLabel(`$${(billing.estimatedLlmCostUsd ?? 0).toFixed(6)}`, billing.llm.runsWithEstimatedCost ?? 0, billing.llm.runCount)}`,
     `Accounting: ${campaign.accounting!.attempts.length} retained attempts; ${campaign.accounting!.missingAttempts} missing attempts; ${campaign.accounting!.excludedArtifacts} out-of-scope artifacts excluded. Costs cover captured usage, not unobserved setup or external charges.`,
+    "",
+    `Feedback across retained attempts: ${feedback.complaints} complaints; ${feedback.suggestions} suggestions; ${feedback.review.length} distinct items awaiting review; ${feedback.incomplete} attempts with incomplete collection. Tool submissions: ${feedback.failedSubmissions} failed, ${feedback.unknownSubmissions} unresolved. Full bodies are in access-controlled snapshots/agent-feedback.json.`,
     "",
     `Estimated Daytona list-price runtime cost: $${billing.estimatedRuntimeCostUsd.toFixed(6)}`,
     ...(billing.judge ? [`Estimated judge cost: ${billing.judge.estimatedCostUsd === null ? "unknown" : `$${billing.judge.estimatedCostUsd.toFixed(6)}`}; ${billing.judge.attempts} attempts; ${billing.judge.attemptsWithUnknownUsage} with unknown usage; $${billing.judge.reservedCostUsd.toFixed(6)} reserved`] : []),

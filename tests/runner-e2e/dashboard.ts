@@ -7,6 +7,7 @@ import { journeyCapabilities, journeyFeatureIds } from "./journey-features.js";
 import { journeyFeatureStyles, renderJourneyFeatureCoverage, renderJourneyFeatureOptions } from "./feature-coverage.js";
 import { STARTUP_REUSE_LAYERS, summarizeStartupReuse } from "../../packages/adapter-utils/src/startup-reuse.js";
 import { renderFirstTaskDetails } from "./first-task-report.js";
+import { summarizeCampaignFeedback } from "./feedback.js";
 import {
   discoverReportCatalog,
   type ReportExecution,
@@ -293,6 +294,7 @@ function renderCase(
       <summary><span>Test details</span><span class="case-detail-summary">${matcherResults.length ? `${passedMatchers}/${matcherResults.length} checks${notReached ? ` · ${notReached} not reached` : ""}` : "No checks recorded"}${entry ? ` · ${html(durationLabel(entry.result.durationMs))}` : ""}</span></summary>
     ${passed ? outcome : ""}
     ${billingStrip}
+    ${entry?.result.feedback ? `<p class="detail">Feedback: ${entry.result.feedback.complaints} complaints · ${entry.result.feedback.suggestions} suggestions · ${entry.result.feedback.review.length} distinct items awaiting review. Saved-feedback collection: ${html(entry.result.feedback.collection)}; invocation coverage: ${html(entry.result.feedback.invocationCollection)}. Tool receipts: ${entry.result.feedback.invocations.failed} failed · ${entry.result.feedback.invocations.unknown} unresolved. Full bodies: access-controlled snapshots/agent-feedback.json.</p>` : entry ? `<p class="detail">Feedback was not captured for this attempt.</p>` : ""}
     ${links}
     ${renderFirstTaskDetails(entry?.result)}
     <code class="execution-id">${html(execution.id)}</code>
@@ -385,6 +387,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     (total, entry) => total + resolveScreenshots(entry).length,
     0,
   );
+  const campaignFeedback = summarizeCampaignFeedback(input.campaign?.accounting?.attempts ?? input.entries.map(entry => entry.result));
   const campaignBilling = input.campaign?.billing ?? aggregateCampaignBilling(
     selectedEntries.map((entry) => entry.result),
   );
@@ -833,6 +836,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     ${renderCampaignSuiteSummary(input.campaign?.suites ?? [], catalog, "", false)}
     <details class="campaign-billing-details"><summary>Campaign usage and spend</summary>
     <section class="billing-overview" aria-label="Campaign billing summary">
+      <div class="billing-metric"><strong>${campaignFeedback.complaints} / ${campaignFeedback.suggestions}</strong><span>Complaints / suggestions · retained attempts</span><small>${campaignFeedback.review.length} distinct items awaiting review · ${campaignFeedback.incomplete} attempts with incomplete collection · ${campaignFeedback.failedSubmissions} failed submissions · ${campaignFeedback.unknownSubmissions} unresolved submissions</small></div>
       ${input.campaign?.accounting ? `<div class="billing-metric"><strong>${input.campaign.accounting.attempts.length}</strong><span>${input.campaign.accounting.scope === "retained_attempts" ? "Retained attempts" : "Selected results only"}</span><small>${input.campaign.accounting.missingAttempts} missing attempts · ${input.campaign.accounting.excludedArtifacts} out-of-scope artifacts</small></div>` : ""}
       <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.inputTokens, campaignBilling.llm))}</strong><span>Input tokens</span></div>
       <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.outputTokens, campaignBilling.llm))}</strong><span>Output tokens</span></div>

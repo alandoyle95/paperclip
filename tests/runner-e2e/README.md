@@ -2523,3 +2523,25 @@ pnpm test:e2e:runner -- --id case-handoffs.runner-codex-subscription.local.same-
 
 The suite is excluded from `--all`. Its presence is not live qualification;
 inspect the packaged attempt evidence and normal Product E2E report.
+
+### Complaints and suggestions
+
+Each ordinary live attempt collects company-wide saved feedback after retiring
+runs and before fixture teardown, even when cancellation or grading fails. This
+includes feedback from child and background runs. Full paginated bodies and
+native tool invocation outcomes are checkpointed in the access-controlled
+`snapshots/agent-feedback.json` artifact. Collection has a 30-second deadline;
+missing detail pages, truncated run lists, active work, and unavailable APIs
+remain explicit partial/unavailable observations. Legacy shell helpers do not
+have complete native invocation coverage. An empty saved-feedback list does not
+prove that a tool was available, and a completed tool receipt does not by itself
+prove a saved submission.
+
+Results and retained-attempt receipts contain only counts, closed statuses, and
+body fingerprints. Campaign reports group identical fingerprints across attempts
+into distinct items awaiting review. Feedback presence does not change product
+grades. Inspect full bodies in private evidence and record a disposition before
+considering the review complete; collection itself performs no model call or
+semantic triage. Historical artifacts without feedback fields are labeled as
+uncaptured. A killed worker that never reaches finalization is also uncaptured,
+not evidence of zero feedback.
