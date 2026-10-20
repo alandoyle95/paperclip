@@ -53,7 +53,6 @@ export function validateEvalOperationsReport(report: EvalOperationsReport): void
   if (requests !== report.requests || unresolved !== report.unresolvedRequests || rowKnown !== known || rowHeld !== held) fail();
 }
 
-/** Closed public projection. Never copy provider IDs, receipt bodies, keys or paths. */
 export async function readEvalOperationsReport(file: string): Promise<EvalOperationsReport> {
   const loaded = await readEvalCostLedger(file), snapshot = loaded.state.snapshot();
   const groups = new Map<string, EvalOperationsReport["attempts"][number]>();
