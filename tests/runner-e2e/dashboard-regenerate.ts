@@ -2,6 +2,7 @@ import path from "node:path";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { runnerMatrix } from "./catalog.js";
 import { renderRunnerE2EDashboard } from "./dashboard.js";
+import { campaignFeedbackReviewText } from "./feedback-dispositions.js";
 import {
   buildRunnerCampaign,
   canonicalExecutionId,
@@ -177,10 +178,19 @@ export async function regenerateRunnerDashboard(input: {
       evidenceErrors: normalized.results[index]?.evidenceErrors ?? [],
     })),
   };
+  const summary = await readFile(path.join(bundle, "summary.md"), "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
+  const reviewStatus = /^(?:[0-9]+ distinct feedback items await review\.|Feedback reviewed by (?:human|agent) at ).*$/m;
+  const refreshedSummary = summary === undefined ? undefined : reviewStatus.test(summary)
+    ? summary.replace(reviewStatus, () => campaignFeedbackReviewText(campaign))
+    : `${summary.trimEnd()}\n\n## Campaign feedback review\n\n${campaignFeedbackReviewText(campaign)}\n`;
   await mkdir(outputDirectory, { recursive: true });
   await Promise.all([
     writeFile(path.join(outputDirectory, "index.html"), dashboard, "utf8"),
     writeFile(path.join(outputDirectory, "dashboard.html"), dashboard, "utf8"),
+    ...(refreshedSummary === undefined ? [] : [writeFile(path.join(outputDirectory, "summary.md"), refreshedSummary, "utf8")]),
     writeFile(
       path.join(outputDirectory, "normalized-results.json"),
       `${JSON.stringify(upgraded, null, 2)}\n`,

@@ -83,7 +83,7 @@ export function renderCampaignFeedbackReview(campaign: RunnerE2ECampaign): strin
     const decision = campaign.feedbackReview?.decisions.find(item => item.fingerprint === group.fingerprint);
     return `<tr><td>${html(group.kind)}</td><td><code>${html(group.fingerprint)}</code></td><td>${group.occurrences}</td><td>${html(decision?.disposition ?? "unreviewed")}</td><td>${decision?.duplicateOf ? html(decision.duplicateOf) : ""}${decision?.issueNumber ? `<a href="https://github.com/paperclipai/paperclip/issues/${decision.issueNumber}">#${decision.issueNumber}</a>` : ""}</td></tr>`;
   }).join("");
-  return `<section aria-label="Campaign feedback review"><h2>Campaign feedback review</h2><p>${html(summary)}</p><p>Full bodies and review rationale stay in private evidence. Exact duplicate bodies are grouped once; related causes can be linked by a reviewed duplicate disposition.</p>${rows ? `<table><thead><tr><th>Kind</th><th>Fingerprint</th><th>Occurrences</th><th>Disposition</th><th>Follow-up</th></tr></thead><tbody>${rows}</tbody></table>` : ""}</section>`;
+  return `<section aria-label="Campaign feedback review"><h2>Campaign feedback review</h2><p>${html(summary)}</p><p>Full bodies and review rationale stay in private evidence. Exact duplicate bodies are grouped once; related causes can be linked by a reviewed duplicate disposition.</p>${rows ? `<div class="matcher-wrap" tabindex="0" role="region" aria-label="Feedback review decisions"><table><thead><tr><th>Kind</th><th>Fingerprint</th><th>Occurrences</th><th>Disposition</th><th>Follow-up</th></tr></thead><tbody>${rows}</tbody></table></div>` : ""}</section>`;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

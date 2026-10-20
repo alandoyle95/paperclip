@@ -2571,6 +2571,8 @@ campaign ID. The importer requires exactly one decision per collected group
 and rejects a review if retained attempts or feedback coverage changed. Blank
 templates cannot count as reviewed. Dashboard regeneration and publication
 preserve the review. An empty review can record that no saved items were found;
+regeneration refreshes the review status in an existing `summary.md` while
+preserving its other measurements and links.
 it never closes collection gaps, failed submissions, or changes product grades.
 This workflow makes no additional model call. Review performed by a separate
 paid model must be budgeted and recorded as `feedback_review` work separately.

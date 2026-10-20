@@ -40,6 +40,8 @@ it("preserves dispositions on regeneration without changing failed grades or inc
   const root = await mkdtemp(path.join(tmpdir(), "feedback-review-"));
   try {
     await writeFile(path.join(root, "normalized-results.json"), JSON.stringify({ ...campaign, feedbackReview: undefined }));
+    const retainedHeader = "# Existing campaign\n\nProvider-reported LLM cost: $0.123456\n\n";
+    await writeFile(path.join(root, "summary.md"), `${retainedHeader}${campaignFeedbackReviewText({ ...campaign, feedbackReview: undefined })}\n`);
     const feedbackReviewFile = path.join(root, "review.json");
     await writeFile(feedbackReviewFile, JSON.stringify(campaign.feedbackReview));
     await regenerateRunnerDashboard({ bundle: root, historyFile: null, feedbackReviewFile });
@@ -52,6 +54,9 @@ it("preserves dispositions on regeneration without changing failed grades or inc
     expect(html).toContain("1 actionable; 1 duplicate; 0 already fixed; 1 unsupported; 0 needs investigation");
     expect(html).toContain("1 attempts have incomplete collection");
     expect(html).toContain("https://github.com/paperclipai/paperclip/issues/123");
+    const summary = await readFile(path.join(root, "summary.md"), "utf8");
+    expect(summary).toBe(`${retainedHeader}${campaignFeedbackReviewText(campaign)}\n`);
+    expect(summary).not.toContain("await review");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
