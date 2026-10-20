@@ -99,7 +99,7 @@ export class EvalUsageStream {
 /** One forwarding attempt, with no hidden retry/fallback and a durable reservation before fetch. */
 export async function forwardEvalRequest(input: {
   ledger: Ledger; identity: EvalChargeIdentity; route: EvalGatewayRoute; payload: unknown;
-  deadlineAt: number; signal?: AbortSignal; anthropicBeta?: string;
+  deadlineAt: number; signal?: AbortSignal; anthropicBeta?: string; anthropicBetaQuery?: boolean;
   onHeaders: (status: number, headers: Record<string, string>) => void;
   onChunk: (chunk: Uint8Array, signal: AbortSignal) => Promise<void>;
   persist: (receipt: EvalGatewayReceipt) => Promise<void>;
@@ -132,7 +132,7 @@ export async function forwardEvalRequest(input: {
       if (input.anthropicBeta && /^[A-Za-z0-9, _-]{1,2048}$/.test(input.anthropicBeta)) headers["anthropic-beta"] = input.anthropicBeta;
     }
     const base = route.mode === "braintrust" ? "https://gateway.braintrust.dev" : route.provider === "openai" ? "https://api.openai.com/v1" : "https://api.anthropic.com/v1";
-    const endpoint = route.provider === "openai" ? "/responses" : "/messages";
+    const endpoint = route.provider === "openai" ? "/responses" : input.anthropicBetaQuery ? "/messages?beta=true" : "/messages";
     response = await (input.transport ?? fetch)(base + endpoint, { method: "POST", headers, body: JSON.stringify(body), redirect: "error", signal });
     receipt.status = response.status;
     receipt.gatewayRequestId = safeHeader(response.headers.get("x-bt-request-id"));
@@ -206,7 +206,7 @@ async function requestJson(req: IncomingMessage) {
 }
 
 /** Loopback-only adapter endpoint. The agent receives an ephemeral token, never the upstream key. */
-export async function startEvalGateway(input: Omit<Parameters<typeof forwardEvalRequest>[0], "payload" | "onHeaders" | "onChunk" | "signal" | "anthropicBeta">) {
+export async function startEvalGateway(input: Omit<Parameters<typeof forwardEvalRequest>[0], "payload" | "onHeaders" | "onChunk" | "signal" | "anthropicBeta" | "anthropicBetaQuery">) {
   const token = randomBytes(32).toString("hex"), pending = new Set<Promise<void>>(), controllers = new Set<AbortController>();
   let closed = false, poisoned = false;
   const respond = (res: ServerResponse, status: number, code: string) => {
@@ -219,12 +219,17 @@ export async function startEvalGateway(input: Omit<Parameters<typeof forwardEval
       if (Buffer.byteLength(auth) !== Buffer.byteLength(token) || !timingSafeEqual(Buffer.from(auth), Buffer.from(token))) { respond(res, 401, "unauthorized"); return; }
       const endpoint = input.route.provider === "openai" ? "responses" : "messages";
       if (closed || poisoned) { respond(res, 503, "gateway_unavailable"); return; }
-      if (req.method !== "POST" || ![`/${endpoint}`, `/v1/${endpoint}`].includes(req.url ?? "")) { respond(res, 404, "unqualified_endpoint"); return; }
+      const paths = [`/${endpoint}`, `/v1/${endpoint}`];
+      // Claude's Messages SDK adds this query independently of anthropic-beta.
+      // Admit that observed contract, never arbitrary query parameters.
+      if (input.route.provider === "anthropic") paths.push("/messages?beta=true", "/v1/messages?beta=true");
+      if (req.method !== "POST" || !paths.includes(req.url ?? "")) { respond(res, 404, "unqualified_endpoint"); return; }
       const abort = new AbortController(); controllers.add(abort);
       const onClose = () => { if (!res.writableEnded) abort.abort(); }; res.on("close", onClose);
       try {
         const receipt = await forwardEvalRequest({ ...input, payload: await requestJson(req), signal: abort.signal,
           anthropicBeta: typeof req.headers["anthropic-beta"] === "string" ? req.headers["anthropic-beta"] : undefined,
+          anthropicBetaQuery: input.route.provider === "anthropic" && req.url?.endsWith("?beta=true"),
           onHeaders: (status, headers) => { res.writeHead(status, headers); },
           onChunk: async (chunk, signal) => { if (!res.write(chunk)) await once(res, "drain", { signal }); },
         });

@@ -178,3 +178,20 @@ it("applies the request deadline while waiting for downstream backpressure", asy
   expect(receipt).toMatchObject({ outcome: "cancelled", errorCode: "request_cancelled" });
   expect(f.ledger.snapshot()).toMatchObject({ inflight: 0, unknownRequests: 1, heldUsd: "0.003000000" });
 });
+it("forwards Claude's Messages beta query without admitting unrelated endpoints or queries", async () => {
+  const f = await fixture();
+  const anthropicRoute: EvalGatewayRoute = { ...route, provider: "anthropic", mode: "direct", price: { provider: "anthropic", model: "fixture",
+    version: "fixture", sourceUrl: "https://provider.invalid/prices", inputUsdPerMillion: "2", cachedReadUsdPerMillion: "1", outputUsdPerMillion: "10",
+    cacheWrite5mUsdPerMillion: "2.5", cacheWrite1hUsdPerMillion: "4" } };
+  const body = { type: "message", model: "fixture", usage: { input_tokens: 2, output_tokens: 3, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } };
+  const transport = vi.fn<typeof fetch>(async () => Response.json(body));
+  const gateway = await startEvalGateway({ ...f, route: anthropicRoute, transport }); closes.push(() => gateway.close());
+  const request = (pathname: string) => fetch(gateway.baseUrl + pathname, { method: "POST", headers: { "x-api-key": gateway.token, "anthropic-beta": "fixture-beta" }, body: JSON.stringify({ model: "fixture", messages: [] }) });
+  expect((await request("/v1/messages?beta=true&extra=true")).status).toBe(404);
+  const accepted = await request("/v1/messages?beta=true");
+  expect(accepted.status).toBe(200); expect(await accepted.json()).toEqual(body);
+  expect(transport).toHaveBeenCalledOnce();
+  expect(transport.mock.calls[0]![0]).toBe("https://api.anthropic.com/v1/messages?beta=true");
+  expect(transport.mock.calls[0]![1]!.headers).toMatchObject({ "anthropic-beta": "fixture-beta" });
+  expect(f.ledger.snapshot()).toMatchObject({ unknownRequests: 0, inflight: 0 });
+});
