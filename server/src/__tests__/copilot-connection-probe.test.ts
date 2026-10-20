@@ -68,7 +68,8 @@ describe("Copilot connection verification", () => {
     const runnerTask = vi.fn(async () => ({ kind: "copilot_metadata", taskId: "task", metadata: verified, executionStopped: true }));
     const target = { kind: "remote", transport: "sandbox", remoteCwd: ".", runnerTask } as const;
     mocks.resolve.mockResolvedValue(target);
-    expect(await probeCopilotConnection({} as Db, "company", "private-token", "selected", "gpt-5.6-luna")).toEqual(verified);
+    expect(await probeCopilotConnection({} as Db, "company", "private-token", "selected", "gpt-5.6-luna", { targetAgentId: "saved-agent" })).toEqual(verified);
+    expect(mocks.acquire).toHaveBeenCalledWith(expect.objectContaining({ agentId: "saved-agent" }));
     expect(runnerTask).toHaveBeenCalledWith({ kind: "copilot_metadata", token: "private-token", model: "gpt-5.6-luna" });
     expect(mocks.updateLeaseMetadata).toHaveBeenCalledWith("lease", expect.objectContaining({ runnerTaskProbe: expect.objectContaining({ runId: expect.any(String) }) }));
     expect(mocks.realize).not.toHaveBeenCalled(); expect(mocks.command).not.toHaveBeenCalled(); expect(mocks.metadata).not.toHaveBeenCalled();

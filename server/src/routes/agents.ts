@@ -3046,7 +3046,7 @@ export function agentRoutes(
       const service = aiConnectionService(db);
       const selection = await service.select({ companyId, userId, agentId: modelAgentId ?? "00000000-0000-0000-0000-000000000000",
         adapterType: type, runnerProvider: "acpx", acpxAgent: "copilot", binding, allowUninstalledPersonal: true, allowUninstalledShared });
-      const metadata = await probeCopilotConnection(db, companyId, await service.credential(selection), modelEnvironmentId, undefined, { pluginWorkerManager: options.pluginWorkerManager });
+      const metadata = await probeCopilotConnection(db, companyId, await service.credential(selection), modelEnvironmentId, undefined, { pluginWorkerManager: options.pluginWorkerManager, targetAgentId: modelAgentId ?? undefined });
       res.setHeader("Cache-Control", "no-store");
       res.json(metadata.models);
       return;
@@ -3128,7 +3128,7 @@ export function agentRoutes(
     if (test || binding.provider === "github") {
       const testEnvironmentId = await resolveAdapterTestEnvironmentId(companyId, environmentId, binding.provider === "github");
       if (testEnvironmentId) await assertAdapterTestEnvironmentForCompany(companyId, testEnvironmentId, adapterType);
-      const target = await resolveAdapterTestExecutionContext({ companyId, adapterType, environmentId: testEnvironmentId });
+      const target = await resolveAdapterTestExecutionContext({ companyId, adapterType, agentId: newAgent ? undefined : agentId, environmentId: testEnvironmentId });
       try {
         if (!target.executionTarget && target.fallbackChecks.length > 0) throw unprocessable("The agent environment is not available for adoption");
         await withManagedAiProbe(db, { companyId, agentId, responsibleUserId: userId, adapterType, binding, config, allowUninstalledPersonal: newAgent, allowUninstalledShared, allowLegacyValidation: true }, async managed => {
@@ -3280,6 +3280,7 @@ export function agentRoutes(
       const { executionTarget, environmentName, fallbackChecks, sandboxIdentityCheck, release } =
         await resolveAdapterTestExecutionContext({
           companyId,
+          agentId: savedAgentId ?? undefined,
           adapterType: type,
           environmentId: requestedEnvironmentId,
         });

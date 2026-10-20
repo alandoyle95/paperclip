@@ -12,7 +12,8 @@ import { buildLoginLeaseAcquireArgs } from "./adapter-login-lease.js";
 import { logger } from "../middleware/logger.js";
 import { forbidden, unprocessable } from "../errors.js";
 
-export async function probeCopilotConnection(db: Db, companyId: string, token: string, suppliedEnvironmentId?: string | null, model?: string, runtimeOptions: Parameters<typeof environmentRuntimeService>[1] = {}) {
+export async function probeCopilotConnection(db: Db, companyId: string, token: string, suppliedEnvironmentId?: string | null, model?: string, options: Parameters<typeof environmentRuntimeService>[1] & { targetAgentId?: string } = {}) {
+  const { targetAgentId, ...runtimeOptions } = options;
   const environments = environmentService(db), settings = instanceSettingsService(db);
   const experimental = await settings.getExperimental();
   let environmentId = suppliedEnvironmentId ?? (await settings.get()).defaultEnvironmentId;
@@ -38,7 +39,7 @@ export async function probeCopilotConnection(db: Db, companyId: string, token: s
   let probeFailed = false;
   try {
     if (environment.driver !== "ssh") {
-      lease = await runtime.acquireRunLease(buildLoginLeaseAcquireArgs({ metadata: { companyId, environment, adapterType: "paperclip_runner" }, assertCompanyBinding: true, requestedExpiresAt: new Date(Date.now() + 90_000) }));
+      lease = await runtime.acquireRunLease(buildLoginLeaseAcquireArgs({ metadata: { companyId, environment, adapterType: "paperclip_runner" }, targetAgentId, assertCompanyBinding: true, requestedExpiresAt: new Date(Date.now() + 90_000) }));
       if (environment.driver === "plugin" && await runtime.supportsTasks({ lease: lease.lease })) {
         const updated = await environments.updateLeaseMetadata(lease.lease.id, { ...lease.lease.metadata,
           runnerTaskProbe: { runId: randomUUID(), sessionId: randomUUID(), expiresAtMs: Date.now() + 90_000 } });
