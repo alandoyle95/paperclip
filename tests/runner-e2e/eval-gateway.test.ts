@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { connect } from "node:net";
 import { afterEach, expect, it, vi } from "vitest";
 import { openEvalCostLedger, readEvalCostLedger } from "./cost-ledger.js";
 import { evalRequestReservation, EvalUsageStream, forwardEvalRequest, startEvalGateway, type EvalGatewayRoute, type EvalGatewayReceipt } from "./eval-gateway.js";
@@ -166,6 +167,34 @@ it("admits later HTTP requests after temporary concurrency exhaustion", async ()
   expect(later.status).toBe(200); expect(await later.json()).toEqual(usage);
   expect(transport).toHaveBeenCalledTimes(2);
   expect(f.ledger.snapshot()).toMatchObject({ inflight: 0, unknownRequests: 0 });
+});
+it("rejects malformed, interrupted and unqualified uploads without disabling later valid requests", async () => {
+  const f = await fixture(), transport = vi.fn<typeof fetch>(async () => response());
+  const gateway = await startEvalGateway({ ...f, transport }); closes.push(() => gateway.close());
+  const headers = { authorization: `Bearer ${gateway.token}` };
+  for (const body of ["{", JSON.stringify({ model: "other" }), JSON.stringify({ model: "fixture", tools: [{ type: "web_search" }] })]) {
+    const rejected = await fetch(`${gateway.baseUrl}/responses`, { method: "POST", headers, body });
+    expect(rejected.status).toBe(400); await rejected.text();
+  }
+  // End the TCP upload before its declared Content-Length has arrived.
+  await new Promise<void>((resolve, reject) => {
+    const socket = connect(Number(new URL(gateway.baseUrl).port), "127.0.0.1");
+    socket.on("error", reject); socket.on("close", () => resolve()); socket.resume();
+    socket.on("connect", () => socket.end(`POST /responses HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer ${gateway.token}\r\nContent-Length: 100\r\n\r\n{`));
+  });
+  expect(transport).not.toHaveBeenCalled(); expect(f.ledger.snapshot().requests).toHaveLength(0);
+  const valid = await fetch(`${gateway.baseUrl}/responses`, { method: "POST", headers, body: JSON.stringify(f.payload) });
+  expect(valid.status).toBe(200); expect(await valid.json()).toEqual(usage);
+  expect(transport).toHaveBeenCalledOnce(); expect(f.ledger.snapshot().requests).toHaveLength(1);
+});
+it("still disables the HTTP gateway after a receipt persistence failure", async () => {
+  const f = await fixture(), transport = vi.fn<typeof fetch>(async () => response());
+  const gateway = await startEvalGateway({ ...f, transport, persist: async () => { throw new Error("storage failure"); } }); closes.push(() => gateway.close());
+  for (let i = 0; i < 2; i++) {
+    const denied = await fetch(`${gateway.baseUrl}/responses`, { method: "POST", headers: { authorization: `Bearer ${gateway.token}` }, body: JSON.stringify(f.payload) });
+    expect(denied.status).toBe(503); await denied.text();
+  }
+  expect(transport).not.toHaveBeenCalled(); expect(f.ledger.snapshot().requests).toHaveLength(1);
 });
 it("applies the request deadline while waiting for downstream backpressure", async () => {
   const f = await fixture();

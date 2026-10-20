@@ -29,6 +29,7 @@ export interface EvalGatewayReceipt {
 const money = (n: bigint) => `${n / 1_000_000_000n}.${String(n % 1_000_000_000n).padStart(9, "0")}`;
 const safeHeader = (value: string | null) => value && /^[A-Za-z0-9_.:/ -]{1,512}$/.test(value) ? value : undefined;
 const row = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+class EvalRequestError extends Error {}
 
 /** Conservative list-price reservation; provider invoices can still differ. */
 export function evalRequestReservation(route: EvalGatewayRoute): string {
@@ -55,24 +56,24 @@ export function evalRequestReservation(route: EvalGatewayRoute): string {
 
 function boundedPayload(value: unknown, route: EvalGatewayRoute) {
   const body = row(value);
-  if (body.model !== route.price.model) throw new Error("unqualified_model");
-  if (body.background === true || body.mcp_servers !== undefined || body.service_tier !== undefined && !["auto", "default", "standard_only"].includes(String(body.service_tier))) throw new Error("unqualified_billing_mode");
-  if (body.speed !== undefined && body.speed !== "standard" || body.inference_geo !== undefined) throw new Error("unqualified_billing_mode");
+  if (body.model !== route.price.model) throw new EvalRequestError("unqualified_model");
+  if (body.background === true || body.mcp_servers !== undefined || body.service_tier !== undefined && !["auto", "default", "standard_only"].includes(String(body.service_tier))) throw new EvalRequestError("unqualified_billing_mode");
+  if (body.speed !== undefined && body.speed !== "standard" || body.inference_geo !== undefined) throw new EvalRequestError("unqualified_billing_mode");
   if (body.tools !== undefined && (!Array.isArray(body.tools) || body.tools.some(tool => {
     const type = row(tool).type;
     return route.provider === "openai" ? !["function", "custom"].includes(String(type)) : type !== undefined && type !== "custom";
-  }))) throw new Error("unqualified_hosted_tool");
+  }))) throw new EvalRequestError("unqualified_hosted_tool");
   // This pilot price contract covers text and locally executed tools only.
   const inspect = (item: unknown): void => {
     if (Array.isArray(item)) { item.forEach(inspect); return; }
     if (!item || typeof item !== "object") return;
     const r = row(item);
-    if (["input_image", "input_audio", "input_video", "image", "audio", "document", "video", "input_file"].includes(String(r.type))) throw new Error("unqualified_multimodal_input");
+    if (["input_image", "input_audio", "input_video", "image", "audio", "document", "video", "input_file"].includes(String(r.type))) throw new EvalRequestError("unqualified_multimodal_input");
     Object.values(r).forEach(inspect);
   };
   inspect(body);
   const field = route.provider === "openai" ? "max_output_tokens" : "max_tokens";
-  if (body[field] !== undefined && (!Number.isSafeInteger(body[field]) || Number(body[field]) < 1)) throw new Error("invalid_output_limit");
+  if (body[field] !== undefined && (!Number.isSafeInteger(body[field]) || Number(body[field]) < 1)) throw new EvalRequestError("invalid_output_limit");
   return { ...body, [field]: Math.min(Number(body[field] ?? route.maximumOutputTokens), route.maximumOutputTokens),
     service_tier: route.provider === "openai" ? "default" : "standard_only" };
 }
@@ -106,10 +107,14 @@ export async function forwardEvalRequest(input: {
   transport?: typeof fetch;
 }): Promise<EvalGatewayReceipt> {
   const { route, ledger } = input;
-  const body = boundedPayload(input.payload, route), reservation = evalRequestReservation(route);
+  let body: ReturnType<typeof boundedPayload>;
+  try { body = boundedPayload(input.payload, route); }
+  catch (error) { throw error instanceof EvalRequestError ? error : new EvalRequestError("invalid_request_payload"); }
+  const reservation = evalRequestReservation(route);
   if (!route.apiKey || /[\r\n]/.test(route.apiKey)) throw new Error("missing_gateway_credential");
   if (route.mode === "braintrust" && (!/^[0-9a-f-]{36}$/i.test(route.projectId ?? "") || !/^[A-Za-z0-9_-]+$/.test(route.endpointName ?? ""))) throw new Error("invalid_project_provider");
-  if (input.signal?.aborted || Date.now() >= input.deadlineAt) throw new Error("request_deadline_reached");
+  if (input.signal?.aborted) throw new EvalRequestError("request_cancelled");
+  if (Date.now() >= input.deadlineAt) throw new EvalAdmissionError("request_deadline_reached");
   const requestId = randomUUID();
   const receipt: EvalGatewayReceipt = { requestId, route: route.mode, outcome: "failed", usageComplete: false, final: false, costUsd: null };
   const usage = new ProviderUsageAccumulator(route.provider);
@@ -210,6 +215,7 @@ export async function startEvalGateway(input: Omit<Parameters<typeof forwardEval
   const token = randomBytes(32).toString("hex"), pending = new Set<Promise<void>>(), controllers = new Set<AbortController>();
   let closed = false, poisoned = false;
   const respond = (res: ServerResponse, status: number, code: string) => {
+    if (res.destroyed) return;
     if (!res.headersSent) { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify({ error: { type: "eval_gateway", message: code } })); }
     else res.destroy();
   };
@@ -227,7 +233,10 @@ export async function startEvalGateway(input: Omit<Parameters<typeof forwardEval
       const abort = new AbortController(); controllers.add(abort);
       const onClose = () => { if (!res.writableEnded) abort.abort(); }; res.on("close", onClose);
       try {
-        const receipt = await forwardEvalRequest({ ...input, payload: await requestJson(req), signal: abort.signal,
+        let payload: unknown;
+        try { payload = await requestJson(req); }
+        catch { respond(res, 400, "invalid_request_body"); return; }
+        const receipt = await forwardEvalRequest({ ...input, payload, signal: abort.signal,
           anthropicBeta: typeof req.headers["anthropic-beta"] === "string" ? req.headers["anthropic-beta"] : undefined,
           anthropicBetaQuery: input.route.provider === "anthropic" && req.url?.endsWith("?beta=true"),
           onHeaders: (status, headers) => { res.writeHead(status, headers); },
@@ -236,6 +245,7 @@ export async function startEvalGateway(input: Omit<Parameters<typeof forwardEval
         if (receipt.outcome === "succeeded" || receipt.errorCode === "upstream_rejected") res.end();
         else respond(res, 502, receipt.errorCode ?? "request_failed");
       } catch (error) {
+        if (error instanceof EvalRequestError) { respond(res, 400, "invalid_request_payload"); return; }
         if (error instanceof EvalAdmissionError) { respond(res, 429, "eval_admission_denied"); return; }
         // Ledger or receipt persistence failure must stop every later admission.
         poisoned = true; respond(res, 503, "eval_admission_or_persistence_failed");
