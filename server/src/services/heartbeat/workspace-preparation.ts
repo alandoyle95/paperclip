@@ -202,6 +202,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     resolveReusedGitWorkspaceAnchor,
     appendRunEvent,
   } = input.services;
+  const pluginTaskWorkspace = selectedEnvironmentForConfig?.driver === "plugin" && agent.adapterType === "paperclip_runner";
   const {
     selectedEnvironmentDriver: lowTrustPreflightEnvironmentDriver,
     workspace: resolvedWorkspace,
@@ -236,7 +237,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         return { cwd, source: "agent_home" as const, projectId: null, workspaceId: null, repoUrl: null, repoRef: null,
           workspaceHints: [], warnings: [], baseCwdFallback: false, materializationFailures: [], additionalWorkspaces: [], referencedProjectFailures: [] };
       }
-      if (useIsolatedTaskDirectory && issueRef) {
+      if (useIsolatedTaskDirectory && issueRef && !pluginTaskWorkspace) {
         const cwd = await materializeIsolatedTaskDirectory({
           companyId: agent.companyId,
           issueId: issueRef.id,
@@ -268,7 +269,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
           },
         });
       }
-      if (nativeChatWorkspaceScope && !nativeChatWorkspaceScope.projectId) {
+      if (nativeChatWorkspaceScope && !nativeChatWorkspaceScope.projectId && !pluginTaskWorkspace) {
         const cwd = await materializeNativeChatTaskRoot(
           nativeChatWorkspaceScope,
         );
@@ -295,7 +296,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
           useProjectWorkspace:
             requestedExecutionWorkspaceMode !== "agent_default",
           configuredCwd: readNonEmptyString(mergedConfig.cwd),
-          anchorWorkspace: requestedShouldReuseExisting && reusableExistingExecutionWorkspace?.strategyType === "git_worktree"
+          anchorWorkspace: !pluginTaskWorkspace && requestedShouldReuseExisting && reusableExistingExecutionWorkspace?.strategyType === "git_worktree"
             ? await resolveReusedGitWorkspaceAnchor({
                 agent,
                 workspace: reusableExistingExecutionWorkspace,
@@ -332,6 +333,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         ? {
             ...workspace,
             additionalWorkspaces: [],
+            runnerTaskProjectIds: undefined,
             referencedProjectFailures: [],
           }
         : workspace;
@@ -345,7 +347,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     sourceWorkspaceId: resolvedWorkspace.workspaceId,
     boundWorkspace: reusableExistingExecutionWorkspace ?? existingExecutionWorkspace,
   }));
-  const skipHostProvision = copyOnlyProvisioning || hostProvisionDriver === "sandbox" || hostProvisionDriver === "ssh";
+  const skipHostProvision = copyOnlyProvisioning || hostProvisionDriver === "sandbox" || hostProvisionDriver === "ssh" || hostProvisionDriver === "plugin";
   const hostExecutionWorkspaceConfig = isDotRun ? {} :
     stripHostWorkspaceProvision({
       config: mergedConfig,
@@ -360,6 +362,14 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     repoRef: resolvedWorkspace.repoRef,
     additionalWorkspaces: resolvedWorkspace.additionalWorkspaces,
   } satisfies ExecutionWorkspaceInput;
+  const latestWorkspaceStrategyType = resolveEffectiveWorkspaceStrategyType(
+    requestedExecutionWorkspaceMode,
+    hostExecutionWorkspaceConfig,
+  );
+  if (pluginTaskWorkspace && latestWorkspaceStrategyType === "git_worktree") {
+    throw new WorkspaceValidationFailure("The selected plugin environment does not support Core Git worktree preparation.",
+      { reason: "plugin_workspace_strategy_unsupported" });
+  }
   await timeWorkspace("workspace_base_validation", () => assertGitWorktreeBaseWorkspaceReady({
     requestedExecutionWorkspaceMode,
     config: hostExecutionWorkspaceConfig,
@@ -378,10 +388,6 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     Object.keys(workspaceStrategyForFingerprint).length > 0
       ? workspaceStrategyForFingerprint
       : null;
-  const latestWorkspaceStrategyType = resolveEffectiveWorkspaceStrategyType(
-    requestedExecutionWorkspaceMode,
-    hostExecutionWorkspaceConfig,
-  );
   const selectedEnvironmentConfigForFingerprint = parseObject(
     selectedEnvironmentForConfig?.config,
   );
@@ -470,6 +476,11 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       requestedShouldReuseExisting,
       workspaceConfigFreshness,
     });
+  if (pluginTaskWorkspace && workspaceReuseProvisioningPolicy.shouldRestoreExistingWorkspace
+    && reusableExistingExecutionWorkspace?.strategyType === "git_worktree") {
+    throw new WorkspaceValidationFailure("The selected plugin environment cannot reuse a Core Git worktree.",
+      { reason: "plugin_workspace_strategy_unsupported" });
+  }
   const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
     companyId: agent.companyId,
     heartbeatRunId: run.id,
@@ -495,7 +506,13 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     executionWorkspace,
     reusedExecutionWorkspace,
     policy: resolvedWorkspaceReusePolicy,
-  } = isDotRun ? { executionWorkspace: { ...executionWorkspaceBase, strategy: "project_primary" as const, cwd: resolvedWorkspace.cwd, branchName: null, worktreePath: null, warnings: [], created: false, branchCreatedByRuntime: false } as RealizedExecutionWorkspace, reusedExecutionWorkspace: false, policy: workspaceReuseProvisioningPolicy } : await timeWorkspace("workspace_provision", () => provisionExecutionWorkspaceForFreshnessDecision<RealizedExecutionWorkspace>(
+  } = isDotRun || pluginTaskWorkspace ? {
+    executionWorkspace: { ...executionWorkspaceBase, strategy: pluginTaskWorkspace ? latestWorkspaceStrategyType : "project_primary" as const,
+      cwd: resolvedWorkspace.cwd, branchName: null, worktreePath: null, warnings: [],
+      created: false, branchCreatedByRuntime: false } as RealizedExecutionWorkspace,
+    reusedExecutionWorkspace: pluginTaskWorkspace && workspaceReuseProvisioningPolicy.shouldRestoreExistingWorkspace && Boolean(reusableExistingExecutionWorkspace),
+    policy: workspaceReuseProvisioningPolicy,
+  } : await timeWorkspace("workspace_provision", () => provisionExecutionWorkspaceForFreshnessDecision<RealizedExecutionWorkspace>(
     {
       requestedShouldReuseExisting,
       existingExecutionWorkspaceId:
@@ -753,7 +770,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
               repoUrl: executionWorkspace.repoUrl,
               baseRef: executionWorkspace.repoRef,
               branchName: branchNameForInitialPersistence,
-              providerType:
+              providerType: pluginTaskWorkspace ? "adapter_managed" :
                 executionWorkspace.strategy === "git_worktree"
                   ? "git_worktree"
                   : "local_fs",
@@ -782,7 +799,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
                     : requestedExecutionWorkspaceMode === "agent_default"
                       ? "adapter_managed"
                       : "shared_workspace",
-              strategyType:
+              strategyType: pluginTaskWorkspace ? latestWorkspaceStrategyType :
                 executionWorkspace.strategy === "git_worktree"
                   ? "git_worktree"
                   : "project_primary",
@@ -795,7 +812,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
               repoUrl: executionWorkspace.repoUrl,
               baseRef: executionWorkspace.repoRef,
               branchName: branchNameForInitialPersistence,
-              providerType:
+              providerType: pluginTaskWorkspace ? "adapter_managed" :
                 executionWorkspace.strategy === "git_worktree"
                   ? "git_worktree"
                   : "local_fs",
@@ -891,14 +908,14 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   }
   await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
   const projectRepositoryPaths: string[] = [];
-  if (!isDotRun && persistedExecutionWorkspace && issueId && !persistedNativeExecutionInput && !nativeRecoveryExecutionWorkspaceId) {
+  if (!isDotRun && !pluginTaskWorkspace && persistedExecutionWorkspace && issueId && !persistedNativeExecutionInput && !nativeRecoveryExecutionWorkspaceId) {
     const taskRepositories = await timeWorkspace("workspace_repository_admission", () =>
       executionWorkspacesSvc.prepareTaskRepositoriesForAdmission({ companyId: agent.companyId,
         issueId, workspaceId: persistedExecutionWorkspace!.id, cwd: executionWorkspace.cwd,
         agentId: agent.id, runId: run.id, responsibleUserId }));
     projectRepositoryPaths.push(...taskRepositories.map(repository => repository.relativePath));
   }
-  if (executionWorkspace.projectId
+  if (!pluginTaskWorkspace && executionWorkspace.projectId
     && (resolvedWorkspace.source === "project_primary" || Boolean(reusableExistingExecutionWorkspace?.projectWorkspaceId))
     && !resolvedWorkspace.baseCwdFallback && !persistedNativeExecutionInput && !nativeRecoveryExecutionWorkspaceId) {
     const repositoryRows = await db.select().from(projectWorkspaces).where(and(
@@ -965,6 +982,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       adapterType: agent.adapterType,
       adapterConfig: parseObject(agent.adapterConfig),
       admittedLifecycleMode: persistedNativeExecutionInput?.session.lifecyclePolicy.mode,
+      recoverPluginTask: runOptions.nativeRestartRecovery?.kind === "resume_dead_runner" || runOptions.nativeRestartRecovery?.kind === "bootstrap_incomplete",
       issueId: issueId ?? null,
       heartbeatRunId: run.id,
       agentId: agent.id,
@@ -1061,6 +1079,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       executionWorkspace,
       effectiveExecutionWorkspaceMode,
       persistedExecutionWorkspace,
+      runnerTaskProjectIds: resolvedWorkspace.runnerTaskProjectIds,
       duplexObservabilityRecorder,
     }));
     nativeRunnerPreparationSpans.push({
@@ -1096,7 +1115,8 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   const workspaceRealization = realizationResult.workspaceRealization;
   const executionTarget = realizationResult.executionTarget;
   if (!isDotRun && issueId && (persistedNativeExecutionInput || nativeRecoveryExecutionWorkspaceId)
-      && !(executionTarget?.kind === "remote" && executionTarget.transport === "ssh")) {
+      && !(executionTarget?.kind === "remote" && (executionTarget.transport === "ssh"
+        || (executionTarget.transport === "sandbox" && executionTarget.runnerTask)))) {
     const workspaceId = persistedNativeExecutionInput?.binding.executionWorkspaceId ?? nativeRecoveryExecutionWorkspaceId!;
     const reference = readNativeWorkspaceSyncReference(parseObject(run.runnerProfileJson).nativeWorkspaceSync);
     if (!reference && executionTarget?.kind === "remote" && executionTarget.transport === "sandbox") {

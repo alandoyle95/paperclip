@@ -114,6 +114,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
       const [workspace] = await measureRunPhase("workspace.sources.inventory", async () => tx.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.id, issue.executionWorkspaceId!), eq(executionWorkspaces.companyId, input.companyId), taskWorkspaceSelectableCondition())).for("no key update"));
       if (!workspace) throw conflict("Execution workspace is unavailable");
       await assertTaskWorkspaceExecutionAccess(tx, input.actor, input.companyId, { issueId: input.issueId, workspaceId: workspace.id });
+      if (workspace.providerType === "adapter_managed") throw conflict("Repository preparation is unavailable for this environment-owned workspace");
       const anonymousOnly = await requiresAnonymousAcquisition(tx, { issue, workspace,
         agentId: input.actor.agentId, runId: input.actor.runId });
       const source = resolveAcquisitionSource(parsed.repository, available, anonymousOnly);

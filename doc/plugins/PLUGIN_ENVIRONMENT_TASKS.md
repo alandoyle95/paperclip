@@ -3,8 +3,8 @@
 An environment driver can provide a Runner task through a worker hook.
 The task API has no shell command or file transfer operation.
 
-This API is a server and worker contract. The agent environment test can verify
-a task-capable provider. Native heartbeat dispatch is a separate integration.
+This API is a server and worker contract. The [native execution integration](PLUGIN_RUNNER_EXECUTION.md)
+connects a task-capable environment to a Runner run.
 
 ## Declare the hook
 
@@ -169,4 +169,5 @@ creates a short-lived probe lease with a private run and session identity.
 The probe has no project mounts or task tools. It prepares the launch, checks
 authentication routing, and verifies the Runner and provider hello exchange.
 A passing result requires confirmed cleanup. This test does not enable
-heartbeat dispatch to plugin environments.
+heartbeat dispatch to plugin environments. See the native execution integration
+for that path.

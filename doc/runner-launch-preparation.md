@@ -48,6 +48,6 @@ unsettled checkpoint and prevents reuse.
 ## Plugin task protocol
 
 The [environment task API](plugins/PLUGIN_ENVIRONMENT_TASKS.md#launch-preparation)
-defines the plugin preparation exchange. This callback does not implement a
-plugin task process owner or a Launcher endpoint. Those integrations are
-separate changes.
+defines the plugin preparation exchange. The [native plugin integration](plugins/PLUGIN_RUNNER_EXECUTION.md)
+connects the callback to task execution. A Launcher implementation remains the
+execution owner's responsibility.

@@ -1343,6 +1343,8 @@ export type ResolvedWorkspaceForRun = {
    * workspace only, exactly as before.
    */
   additionalWorkspaces: ResolvedAdditionalWorkspace[];
+  /** Authorized project IDs for plugin-owned storage; no Core filesystem staging. */
+  runnerTaskProjectIds?: string[];
   /**
    * Structured record of every referenced project that the run dropped or failed, paired with the
    * layer that dropped it. Run preparation reads this to emit the requested-vs-synced observability
@@ -1354,7 +1356,7 @@ export type ResolvedWorkspaceForRun = {
 /** The anchor workspace shape, before the additional referenced workspaces are attached. */
 type ResolvedAnchorWorkspaceForRun = Omit<
   ResolvedWorkspaceForRun,
-  "additionalWorkspaces" | "referencedProjectFailures"
+  "additionalWorkspaces" | "referencedProjectFailures" | "runnerTaskProjectIds"
 >;
 
 /**
@@ -3398,7 +3400,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
     agent: typeof agents.$inferSelect,
     context: Record<string, unknown>,
     previousSessionParams: Record<string, unknown> | null,
-    opts?: { useProjectWorkspace?: boolean | null; configuredCwd?: string | null },
+    opts?: { useProjectWorkspace?: boolean | null; configuredCwd?: string | null; executionEnvironmentDriver?: string | null },
   ): Promise<ResolvedAnchorWorkspaceForRun> {
     const issueId =
       readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
@@ -3466,6 +3468,24 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       repoUrl: readNonEmptyString(workspace.repoUrl),
       repoRef: readNonEmptyString(workspace.repoRef),
     }));
+
+    if (opts?.executionEnvironmentDriver === "plugin" && agent.adapterType === "paperclip_runner") {
+      if (workspaceProjectId) {
+        const project = await db.select({ id: projects.id }).from(projects).where(and(
+          eq(projects.companyId, agent.companyId), eq(projects.id, workspaceProjectId),
+        )).then(rows => rows[0] ?? null);
+        if (!project) throw new WorkspaceValidationFailure("The selected plugin project is unavailable.", { reason: "plugin_project_unavailable" });
+      }
+      if (configuredSourceId && projectWorkspaceRows.length === 0) {
+        throw new WorkspaceValidationFailure("The selected project workspace is unavailable.", { reason: "configured_workspace_unavailable" });
+      }
+      const selected = projectWorkspaceRows[0];
+      // This is a logical scope. Preparation resolves the execution-host path.
+      return { cwd: ".", source: workspaceProjectId ? "project_primary" : issueId ? "task_session" : "agent_home",
+        projectId: workspaceProjectId ?? null, workspaceId: selected?.id ?? null,
+        repoUrl: selected?.repoUrl ?? null, repoRef: selected?.repoRef ?? null,
+        workspaceHints, warnings: [], baseCwdFallback: false, materializationFailures: [] };
+    }
 
     if (projectWorkspaceRows.length > 0 || configuredSourceId) {
       const preferredWorkspace = preferredProjectWorkspaceId
@@ -3669,6 +3689,21 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     const responsibleUserId = readNonEmptyString(context.responsibleUserId)
       ?? readNonEmptyString(context.responsible_user_id);
+    const referencedOptions: ResolveRunReferencedProjectsOptions = {
+      companyId: agent.companyId,
+      actor: { type: "agent", agentId: agent.id, companyId: agent.companyId, source: "agent_key",
+        runId: readNonEmptyString(context.executionIdentityRunId),
+        onBehalfOfUserId: responsibleUserId === "local-board" ? null : responsibleUserId },
+      issues: issueService(db), projects: projectService(db), access: authorizationService(db),
+    };
+    if (executionEnvironmentDriver === "plugin" && agent.adapterType === "paperclip_runner" &&
+        issueId && isMultiProjectWorkspaceSyncRemoteEnabled()) {
+      const referenced = await resolveRunReferencedProjects(issueId, anchor.projectId, referencedOptions);
+      return { ...anchor, additionalWorkspaces: [],
+        runnerTaskProjectIds: [anchor.projectId, ...referenced.additional.map(project => project.projectId)]
+          .filter((id): id is string => id !== null),
+        referencedProjectFailures: referenced.failures, warnings: [...anchor.warnings, ...referenced.warnings] };
+    }
     const resolveGitAuth = createGitRemoteAuthProvider(db, agent.companyId, {
       issueId,
       heartbeatRunId: readNonEmptyString(context.executionIdentityRunId),
@@ -3685,18 +3720,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
           executionEnvironmentDriver,
         ),
         remoteReferencedSyncEnabled: isMultiProjectWorkspaceSyncRemoteEnabled(),
-        companyId: agent.companyId,
-        actor: {
-          type: "agent",
-          agentId: agent.id,
-          companyId: agent.companyId,
-          source: "agent_key",
-          runId: readNonEmptyString(context.executionIdentityRunId),
-          onBehalfOfUserId: responsibleUserId === "local-board" ? null : responsibleUserId,
-        },
-        issues: issueService(db),
-        projects: projectService(db),
-        access: authorizationService(db),
+        ...referencedOptions,
         resolveProjectWorkspace: (project) =>
           resolveAdditionalProjectWorkspace(
             { companyId: agent.companyId, project },
