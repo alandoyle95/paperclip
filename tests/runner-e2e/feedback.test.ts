@@ -76,6 +76,22 @@ it("binds native invocations to their run, ignores prose, and recognizes compati
   expect(observeFeedbackInvocations("run", events)).toEqual([{ runId: "run", callId: "call", kind: "complaint", outcome: "failed" }]);
 });
 
+it.each(["paperclip_", "paperclip__", "mcp__paperclip__"])("maps namespaced feedback receipts through native events: %s", prefix => {
+  const events = [
+    event(1, "tool.execution.started", { executionId: "failed", name: `${prefix}submit_complaint` }),
+    event(2, "tool.execution.completed", { executionId: "failed", name: `${prefix}submit_complaint`, status: "failed" }),
+    event(3, "item.started", { kind: "tool_call", item: { id: "done", name: `${prefix}submit_suggestion` } }),
+    event(4, "item.completed", { kind: "tool_result", item: { id: "done", status: "completed" } }),
+    event(5, "tool.execution.started", { executionId: "interrupted", name: `${prefix}submit_suggestion` }),
+    event(6, "tool.execution.started", { executionId: "unrelated", name: "other_submit_complaint" }),
+  ];
+  expect(observeFeedbackInvocations("run", events)).toEqual([
+    { runId: "run", callId: "failed", kind: "complaint", outcome: "failed" },
+    { runId: "run", callId: "done", kind: "suggestion", outcome: "completed" },
+    { runId: "run", callId: "interrupted", kind: "suggestion", outcome: "unknown" },
+  ]);
+});
+
 it.each([{ runtimeMode: "legacy", status: "succeeded" }, { runtimeMode: "native", status: "running" }])("does not claim complete invocation coverage for legacy helpers or still-active work: %o", async run => {
   const summary = await collectAttemptFeedback({ companyId: "company", persist: async () => {}, api: api(path => {
     if (path.includes("agent-commentary")) return { items: [], total: 0 };

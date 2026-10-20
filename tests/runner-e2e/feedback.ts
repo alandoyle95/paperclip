@@ -41,6 +41,8 @@ export function emptyFeedbackSummary(): FeedbackSummary {
 
 function feedbackKind(name: unknown): FeedbackInvocation["kind"] | undefined {
   if (typeof name !== "string") return undefined;
+  // OpenCode and ACP expose MCP names differently from the bare PRP tools.
+  name = name.replace(/^(?:mcp__paperclip__|paperclip__|paperclip_)/, "");
   if (/(?:^|[.\/])submit_complaint$/.test(name)) return "complaint";
   if (/(?:^|[.\/])submit_suggestion$/.test(name)) return "suggestion";
   return undefined;
