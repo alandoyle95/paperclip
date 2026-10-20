@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { AgentCommentaryDetail } from "../../packages/shared/src/validators/agent-commentary.js";
 import type { RunnerApi } from "./api.js";
 import { collectAttemptFeedback, emptyFeedbackSummary, feedbackReview, observeFeedbackInvocations, summarizeCampaignFeedback, FEEDBACK_COLLECTION_LIMITS, type FeedbackEvidence } from "./feedback.js";
@@ -30,7 +30,7 @@ it("collects full paginated company feedback, including feedback outside the sel
   expect(summary).toMatchObject({ collection: "complete", complaints: 101, bodiesCollected: 101, toolAvailability: "unknown" });
   expect(summary.review).toEqual([{ fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/), occurrences: 101, kind: "complaint", disposition: "needs_investigation" }]);
   expect(checkpoints.at(-1)!.entries[100]!.body).toHaveLength(300);
-  expect(checkpoints.some(value => value.entries.length === 100)).toBe(true);
+  expect(checkpoints.some(value => value.entries.length === 10)).toBe(true);
   expect(JSON.stringify(summary)).not.toContain("aaa");
 });
 
@@ -125,6 +125,34 @@ it("bounds collection by a deadline and retains content-free diagnostics", async
   expect(requests).toBe(0);
   expect(summary.collection).toBe("unavailable");
   expect(last).toBeUndefined();
+});
+
+it("preserves the read prefix when slow detail requests exhaust the read budget mid-page", async () => {
+  let now = 0, detailReads = 0;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  const checkpoints: FeedbackEvidence[] = [];
+  const slowApi = { get: async (url: string, options: { timeout: number }) => {
+    if (url.includes("agent-commentary?")) return { items: Array.from({ length: 100 }, (_, index) => entry(String(index))), total: 100 };
+    if (!url.includes("agent-commentary/")) throw new Error("No read should start after the reserved cutoff");
+    detailReads++;
+    now += Math.min(400, options.timeout);
+    if (options.timeout < 400) throw new Error("request timeout");
+    return entry(url.split("/").at(-1)!);
+  } } as Pick<RunnerApi, "get">;
+  try {
+    const summary = await collectAttemptFeedback({ companyId: "company", deadlineAt: 30_000, api: slowApi,
+      persist: async evidence => { checkpoints.push(structuredClone(evidence)); now += 20; },
+    });
+    expect(summary).toMatchObject({ collection: "partial", invocationCollection: "unavailable" });
+    expect(summary.bodiesCollected).toBeGreaterThan(10);
+    expect(summary.bodiesCollected).toBeLessThan(100);
+    expect(checkpoints[1].entries).toHaveLength(10);
+    expect(checkpoints.at(-1)!.entries).toHaveLength(summary.bodiesCollected);
+    expect(checkpoints.at(-1)!.entries.every(value => value.body === entry("fixture").body)).toBe(true);
+    expect(checkpoints.at(-1)!.diagnostics).toContain("deadline_reached");
+    expect(detailReads).toBe(summary.bodiesCollected + 1);
+    expect(now).toBeLessThan(30_000);
+  } finally { clock.mockRestore(); }
 });
 
 it("groups identical feedback for one review without conflating kinds", () => {

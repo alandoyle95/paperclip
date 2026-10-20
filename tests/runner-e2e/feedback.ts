@@ -109,13 +109,14 @@ export async function collectAttemptFeedback(input: {
   deadlineAt?: number;
 }): Promise<FeedbackSummary> {
   const deadlineAt = input.deadlineAt ?? Date.now() + 30_000;
+  const readDeadlineAt = deadlineAt - Math.min(5_000, Math.max(0, Math.floor((deadlineAt - Date.now()) / 5)));
   const summary = emptyFeedbackSummary();
   const evidence: FeedbackEvidence = { version: 1, companyId: input.companyId, entries: [], invocations: [], diagnostics: [], summary };
   let retainedBytes = 0, checkpointBytes = 0, eventBytes = 0, eventCount = 0;
   const diagnose = (code: FeedbackEvidence["diagnostics"][number]) => { if (!evidence.diagnostics.includes(code)) evidence.diagnostics.push(code); };
   const get = <T>(url: string) => {
-    const remaining = deadlineAt - Date.now();
-    if (remaining <= 0) throw new Error("Feedback collection deadline reached");
+    const remaining = readDeadlineAt - Date.now();
+    if (remaining <= 0) { diagnose("deadline_reached"); throw new Error("Feedback collection deadline reached"); }
     return input.api.get<T>(url, { timeout: Math.min(5_000, remaining) });
   };
   const persist = async (force = false) => {
@@ -163,6 +164,7 @@ export async function collectAttemptFeedback(input: {
     expectedTotal ??= page.total;
     summary.collection = "partial";
     for (const entry of page.items) {
+      if (Date.now() >= readDeadlineAt) { diagnose("deadline_reached"); break feedbackPages; }
       if (seen.has(entry.id)) continue;
       seen.add(entry.id);
       if (entry.kind === "complaint") summary.complaints++;
@@ -179,6 +181,7 @@ export async function collectAttemptFeedback(input: {
         detailsFailed = true;
         diagnose("feedback_detail_failed");
       }
+      if (evidence.entries.length % 10 === 0 && !await persist()) break feedbackPages;
     }
     if (!await persist()) break;
     if (offset + page.items.length >= page.total || page.items.length < 100) {
