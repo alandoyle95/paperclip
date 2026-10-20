@@ -1,8 +1,8 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { openEvalCostLedger, readEvalCostLedger, type EvalCostObservation, type EvalSpendLimits } from "./cost-ledger.js";
+import { EvalSpendState, openEvalCostLedger, readEvalCostLedger, type EvalCostObservation, type EvalSpendLimits } from "./cost-ledger.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -149,4 +149,27 @@ it("does not let a terminal estimate erase a stronger partial provider charge", 
     await ledger.observe(observation({ observationId: "provider-final", costUsd: "0.65" }));
     expect(ledger.snapshot()).toMatchObject({ knownUsd: "0.650000000", heldUsd: "0.000000000", unknownRequests: 0 });
   } finally { await ledger.close(); }
+});
+
+it("replays admissions when the deadline crosses between validation and journal writing", async () => {
+  const admittedAt = Date.parse("2098-12-31T23:59:59.999Z");
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(admittedAt);
+  const { file, ledger } = await fixture();
+  const validate = EvalSpendState.prototype.validate;
+  const validation = vi.spyOn(EvalSpendState.prototype, "validate").mockImplementation(function (event, now) {
+    validate.call(this, event, now);
+    vi.setSystemTime(admittedAt + 2);
+  });
+  try {
+    await ledger.reserve("request", identity, "0.1");
+    validation.mockRestore();
+    expect((await readEvalCostLedger(file)).state.snapshot().committedUsd).toBe("0.100000000");
+    const records = (await readFile(file, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect(records[1].at).toBe(new Date(admittedAt).toISOString());
+  } finally {
+    validation.mockRestore();
+    vi.useRealTimers();
+    await ledger.close();
+  }
 });

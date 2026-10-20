@@ -39,8 +39,6 @@ export function validateEvalOperationsManifest(value: EvalOperationsManifest, ex
     evalRequestReservation({ ...model, mode: value.route, apiKey: "validation" });
   }
   for (const execution of executions) {
-    // These cells have one selected provider and no separate hosted judge/tool API.
-    // Expand only after the new path has its own routing/accounting qualification.
     if (execution.environment.id !== "local" || execution.suite.id !== "core-compatibility"
         || !["runner-codex", "runner-acpx-claude", "legacy-codex", "legacy-claude"].includes(execution.profile.id)
         || execution.requiredCredentials.length !== 1) throw new Error(`Unqualified budgeted eval route: ${execution.id}`);

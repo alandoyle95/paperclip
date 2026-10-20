@@ -176,7 +176,6 @@ it("rejects malformed, interrupted and unqualified uploads without disabling lat
     const rejected = await fetch(`${gateway.baseUrl}/responses`, { method: "POST", headers, body });
     expect(rejected.status).toBe(400); await rejected.text();
   }
-  // End the TCP upload before its declared Content-Length has arrived.
   await new Promise<void>((resolve, reject) => {
     const socket = connect(Number(new URL(gateway.baseUrl).port), "127.0.0.1");
     socket.on("error", reject); socket.on("close", () => resolve()); socket.resume();

@@ -13,7 +13,6 @@ export interface EvalGatewayRoute {
   projectId?: string;
   endpointName?: string;
   price: EvalModelPrice;
-  /** Verified provider input ceiling, with worst applicable long-context/cache-write prices. */
   maximumInputTokens: number;
   maximumOutputTokens: number;
   timeoutMs: number;
@@ -31,7 +30,6 @@ const safeHeader = (value: string | null) => value && /^[A-Za-z0-9_.:/ -]{1,512}
 const row = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 class EvalRequestError extends Error {}
 
-/** Conservative list-price reservation; provider invoices can still differ. */
 export function evalRequestReservation(route: EvalGatewayRoute): string {
   if (![route.maximumInputTokens, route.maximumOutputTokens, route.timeoutMs].every(n => Number.isSafeInteger(n) && n > 0)
       || route.timeoutMs > 300_000 || route.provider !== route.price.provider || !validEvalLedgerId(route.price.version) || !validEvalLedgerId(route.price.model)) throw new Error("Invalid eval gateway limits or price identity");
@@ -63,7 +61,6 @@ function boundedPayload(value: unknown, route: EvalGatewayRoute) {
     const type = row(tool).type;
     return route.provider === "openai" ? !["function", "custom"].includes(String(type)) : type !== undefined && type !== "custom";
   }))) throw new EvalRequestError("unqualified_hosted_tool");
-  // This pilot price contract covers text and locally executed tools only.
   const inspect = (item: unknown): void => {
     if (Array.isArray(item)) { item.forEach(inspect); return; }
     if (!item || typeof item !== "object") return;
@@ -78,7 +75,6 @@ function boundedPayload(value: unknown, route: EvalGatewayRoute) {
     service_tier: route.provider === "openai" ? "default" : "standard_only" };
 }
 
-/** Parses SSE event boundaries across arbitrary UTF-8/chunk/CRLF splits. */
 export class EvalUsageStream {
   private readonly decoder = new TextDecoder();
   private pending = "";
@@ -97,7 +93,6 @@ export class EvalUsageStream {
   }
 }
 
-/** One forwarding attempt, with no hidden retry/fallback and a durable reservation before fetch. */
 export async function forwardEvalRequest(input: {
   ledger: Ledger; identity: EvalChargeIdentity; route: EvalGatewayRoute; payload: unknown;
   deadlineAt: number; signal?: AbortSignal; anthropicBeta?: string; anthropicBetaQuery?: boolean;
@@ -123,7 +118,6 @@ export async function forwardEvalRequest(input: {
   const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(Math.max(1, Math.min(route.timeoutMs, input.deadlineAt - Date.now()))), ...(input.signal ? [input.signal] : [])]);
   let response: Response | undefined;
   try {
-    // Checkpoint before any chargeable action. A persistence failure prevents dispatch.
     await input.persist(receipt);
     const headers: Record<string, string> = { "content-type": "application/json", "accept-encoding": "identity" };
     if (route.mode === "braintrust") Object.assign(headers, {
@@ -170,7 +164,6 @@ export async function forwardEvalRequest(input: {
     if (!response.ok) receipt.errorCode = "upstream_rejected";
   } catch (error) {
     receipt.outcome = signal.aborted ? "cancelled" : "failed";
-    // Only our own closed codes are retained. Transport messages may contain secrets.
     const code = error instanceof Error ? error.message : "";
     receipt.errorCode = ["gateway_route_not_qualified", "response_too_large", "usage_frame_too_large", "incomplete_usage_stream"].includes(code) ? code : signal.aborted ? "request_cancelled" : "request_failed";
   } finally {
@@ -186,10 +179,7 @@ export async function forwardEvalRequest(input: {
       delete tokens.reasoning;
       receipt.errorCode ??= "invalid_usage";
     }
-    // Preserve the diagnostic provider receipt before settlement too. Invalid
-    // counters/IDs remain inspectable here but cannot corrupt the strict ledger.
     await input.persist(receipt);
-    // A transport-complete body with no priceable usage remains unknown, not free.
     await ledger.observe({ observationId: `${requestId}:usage`, requestId, source: route.mode === "braintrust" ? "gateway" : "provider",
       provider: route.provider,
       ...(validEvalLedgerId(observed.model) ? { model: observed.model } : {}),
@@ -210,7 +200,6 @@ async function requestJson(req: IncomingMessage) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-/** Loopback-only adapter endpoint. The agent receives an ephemeral token, never the upstream key. */
 export async function startEvalGateway(input: Omit<Parameters<typeof forwardEvalRequest>[0], "payload" | "onHeaders" | "onChunk" | "signal" | "anthropicBeta" | "anthropicBetaQuery">) {
   const token = randomBytes(32).toString("hex"), pending = new Set<Promise<void>>(), controllers = new Set<AbortController>();
   let closed = false, poisoned = false;
@@ -226,8 +215,6 @@ export async function startEvalGateway(input: Omit<Parameters<typeof forwardEval
       const endpoint = input.route.provider === "openai" ? "responses" : "messages";
       if (closed || poisoned) { respond(res, 503, "gateway_unavailable"); return; }
       const paths = [`/${endpoint}`, `/v1/${endpoint}`];
-      // Claude's Messages SDK adds this query independently of anthropic-beta.
-      // Admit that observed contract, never arbitrary query parameters.
       if (input.route.provider === "anthropic") paths.push("/messages?beta=true", "/v1/messages?beta=true");
       if (req.method !== "POST" || !paths.includes(req.url ?? "")) { respond(res, 404, "unqualified_endpoint"); return; }
       const abort = new AbortController(); controllers.add(abort);
@@ -247,7 +234,6 @@ export async function startEvalGateway(input: Omit<Parameters<typeof forwardEval
       } catch (error) {
         if (error instanceof EvalRequestError) { respond(res, 400, "invalid_request_payload"); return; }
         if (error instanceof EvalAdmissionError) { respond(res, 429, "eval_admission_denied"); return; }
-        // Ledger or receipt persistence failure must stop every later admission.
         poisoned = true; respond(res, 503, "eval_admission_or_persistence_failed");
       } finally { controllers.delete(abort); res.off("close", onClose); }
     })();

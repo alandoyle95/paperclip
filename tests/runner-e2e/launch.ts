@@ -1117,8 +1117,6 @@ async function main() {
     finalResults = await runWithConcurrency(executions, operations ? Math.min(requestedParallelism, operations.manifest.limits.maxConcurrent) : requestedParallelism,
       execution => runExecutionWithRetry({ execution, campaignId, options, operations, onAttempt: result => attempts.push(result) }));
   } catch {
-    // A crashed worker must not suppress the campaign report or surviving
-    // attempts. The exact selected set below makes unproduced results missing.
     campaignFailed = true;
     finalResults = [...new Map(attempts.map(result => [result.executionId, result])).values()];
   } finally {

@@ -29,9 +29,7 @@ export interface EvalCostObservation {
   classification: "reported" | "estimated" | "allocated" | "reconciled" | "unknown";
   costUsd?: string;
   pricingVersion?: string;
-  /** Request totals only: input excludes reads/writes, reasoning is an output subset. */
   tokens?: { input?: number; cachedRead?: number; cachedWrite?: number; output?: number; reasoning?: number };
-  /** Only final request receipts can release unused reservation. */
   final: boolean;
 }
 
@@ -46,7 +44,6 @@ const usd = (units: bigint) => `${units / 1_000_000_000n}.${String(units % 1_000
 export const validEvalLedgerId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,511}$/.test(value);
 const validId = validEvalLedgerId;
 const amount = (value: string) => {
-  // Refuse sub-nanodollar precision rather than silently rounding a cap upward.
   if (!/^(?:0|[1-9][0-9]*)(?:\.[0-9]{1,9})?$/.test(value)) throw new Error("Invalid ledger USD amount");
   return usdToUnits(value);
 };
@@ -58,7 +55,6 @@ const fields = (value: object, allowed: string[]) => {
 };
 const ranks = { unknown: 0, allocated: 1, estimated: 2, reported: 3, reconciled: 4 };
 
-/** Admission refusals leave the journal valid and may clear as work finishes. */
 export class EvalAdmissionError extends Error {}
 
 export class EvalSpendState {
@@ -72,11 +68,7 @@ export class EvalSpendState {
         || !Number.isSafeInteger(limits.maxConcurrent) || limits.maxConcurrent < 1) throw new Error("Invalid eval spend limits");
   }
   private authoritative(request: RequestState) {
-    // A matching request observed by multiple systems is counted once. Same-rank
-    // disagreements remain unresolved; arrival order cannot decide a charge.
     const priced = request.observations.filter(value => value.costUsd !== undefined);
-    // A terminal estimate cannot erase a stronger but still-partial provider
-    // receipt. Keep its reservation until that authoritative source is final.
     const bestRank = Math.max(-1, ...priced.map(value => ranks[value.classification]));
     const strongest = priced.filter(value => ranks[value.classification] === bestRank);
     const finalized = strongest.filter(value => value.final);
@@ -98,8 +90,6 @@ export class EvalSpendState {
       const cost = receipt.cost ?? 0n;
       known += cost;
       if (receipt.classification !== "unknown") breakdown[receipt.classification] += cost;
-      // Missing/contradictory receipts and still-running calls hold their full
-      // reservation. Even an observed cost above it remains charged in full.
       const commitment = !request.finished || !receipt.resolved
         ? (request.reserved > cost ? request.reserved : cost) : cost;
       committed += commitment;
@@ -162,7 +152,6 @@ export class EvalSpendState {
   }
 }
 
-/** Reads survive process loss. A truncated/corrupt journal fails closed. */
 export async function readEvalCostLedger(file: string) {
   const raw = await readFile(file, "utf8");
   if (!raw.endsWith("\n")) throw new Error("Eval ledger has an incomplete durable record");
@@ -183,7 +172,6 @@ export async function readEvalCostLedger(file: string) {
   return { state: state!, sequence: lines.length, previous };
 }
 
-/** One durable writer per campaign; call reserve before any external paid action. */
 export async function openEvalCostLedger(file: string, limits: EvalSpendLimits) {
   await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const lockPath = `${file}.lock`;
@@ -201,8 +189,8 @@ export async function openEvalCostLedger(file: string, limits: EvalSpendLimits) 
       ({ state, sequence, previous } = loaded);
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     handle = await open(file, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
-    const write = async (event: Event) => {
-      const body = { seq: sequence, at: new Date().toISOString(), previous, event };
+    const write = async (event: Event, at = Date.now()) => {
+      const body = { seq: sequence, at: new Date(at).toISOString(), previous, event };
       const hash = digest(body);
       await handle!.appendFile(`${JSON.stringify({ ...body, hash })}\n`);
       await handle!.sync();
@@ -215,8 +203,9 @@ export async function openEvalCostLedger(file: string, limits: EvalSpendLimits) 
       if (closed) return Promise.reject(new Error("Eval ledger writer unavailable"));
       const operation = queue.then(async () => {
         if (poisoned) throw new Error("Eval ledger writer unavailable");
-        state.validate(event);
-        try { await write(event); } catch (error) { poisoned = true; throw error; }
+        const admittedAt = Date.now();
+        state.validate(event, admittedAt);
+        try { await write(event, admittedAt); } catch (error) { poisoned = true; throw error; }
         state.apply(event);
       });
       queue = operation.catch(() => {});

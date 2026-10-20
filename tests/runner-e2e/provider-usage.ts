@@ -17,7 +17,6 @@ export interface ProviderUsageReceipt {
   cacheWrite12h?: number;
 }
 
-/** Parse provider cumulative totals. Never sum intermediate stream counters. */
 export function normalizeProviderUsage(provider: "openai" | "anthropic", payload: unknown): ProviderUsageReceipt {
   const body = row(payload), usage = row(body.usage);
   const output = count(usage.output_tokens);
@@ -34,8 +33,6 @@ export function normalizeProviderUsage(provider: "openai" | "anthropic", payload
     cacheWrite12h = count(writes.ttl_12h_tokens);
     if (cachedWrite !== undefined && cacheWrite30m !== undefined && cacheWrite12h !== undefined && cacheWrite30m + cacheWrite12h !== cachedWrite) cachedWrite = undefined;
     const reasoning = count(row(usage.output_tokens_details).reasoning_tokens);
-    // Modern Responses models bill writes separately. Missing write counters are
-    // unknown; an older model needs a separately qualified pricing contract.
     tokens = { input: totalInput !== undefined && cachedRead !== undefined && cachedWrite !== undefined && totalInput >= cachedRead + cachedWrite ? totalInput - cachedRead - cachedWrite : undefined,
       cachedRead, cachedWrite, output, reasoning };
   } else {
@@ -54,7 +51,6 @@ export function normalizeProviderUsage(provider: "openai" | "anthropic", payload
     ...(cacheWrite30m !== undefined ? { cacheWrite30m } : {}), ...(cacheWrite12h !== undefined ? { cacheWrite12h } : {}) };
 }
 
-/** Anthropic message_start/delta usage fields are cumulative snapshots of one request. */
 export class ProviderUsageAccumulator {
   private body: Row = {};
   private usage: Row = {};
@@ -99,11 +95,9 @@ export interface EvalModelPrice extends EvalTokenRates {
   model: string;
   version: string;
   sourceUrl: string;
-  /** Applies to the entire request when total input (including cache) exceeds it. */
   longContext?: { aboveInputTokens: number; rates: EvalTokenRates };
 }
 
-/** List-price estimate, never a provider-reported or reconciled charge. */
 export function estimateProviderCost(receipt: ProviderUsageReceipt, price: EvalModelPrice): string | null {
   if (!receipt.complete || receipt.model !== price.model || receipt.provider !== price.provider) return null;
   const { tokens } = receipt;
@@ -119,10 +113,8 @@ export function estimateProviderCost(receipt: ProviderUsageReceipt, price: EvalM
     const counts = receipt.provider === "openai" ? [receipt.cacheWrite30m, receipt.cacheWrite12h] : [receipt.cacheWrite5m, receipt.cacheWrite1h];
     const writeRates = receipt.provider === "openai" ? [rates.cacheWrite30mUsdPerMillion, rates.cacheWrite12hUsdPerMillion] : [rates.cacheWrite5mUsdPerMillion, rates.cacheWrite1hUsdPerMillion];
     if (counts[0] === undefined || counts[1] === undefined || counts[0] + counts[1] !== tokens.cachedWrite || writeRates[0] === undefined || writeRates[1] === undefined) return null;
-    // Write rates are the total per-token price, not a surcharge on base input.
     numerator += priced(counts[0], writeRates[0]) + priced(counts[1], writeRates[1]);
   }
-  // Round upward by at most one nanodollar, and never use a float to admit work.
   const units = (numerator + 999_999n) / 1_000_000n;
   return `${units / 1_000_000_000n}.${String(units % 1_000_000_000n).padStart(9, "0")}`;
 }

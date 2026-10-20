@@ -7,7 +7,6 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export interface EvalBraintrustConfig { projectId: string; apiKey: string }
 export function evalBraintrustConfig(env: NodeJS.ProcessEnv): EvalBraintrustConfig | undefined {
   const projectId = env.PAPERCLIP_E2E_BRAINTRUST_PROJECT_ID;
-  // An ambient key is not consent to export an eval's contents.
   if (!projectId) return undefined;
   if (!uuid.test(projectId) || !env.BRAINTRUST_API_KEY?.trim() || /[\r\n]/.test(env.BRAINTRUST_API_KEY)) {
     throw new Error("Eval Braintrust export requires an explicit project UUID and API key");
@@ -22,7 +21,6 @@ export interface EvalTraceIdentity { campaignId: string; attemptId: string; exec
 export interface EvalTraceReceipt {
   projectId: string; traceId: string; spanId: string;
   status: "pending" | "accepted" | "failed";
-  /** Transport acceptance does not prove indexing or native harness export. */
   verification: "unverified";
   nativeConfiguration: "not_started" | "configured" | "failed";
   companyId?: string; revision?: string; errorCode?: string; httpStatus?: number;
@@ -30,7 +28,6 @@ export interface EvalTraceReceipt {
 const require = createRequire(new URL("../../server/package.json", import.meta.url));
 const time = (ms: number): [number, number] => [Math.floor(ms / 1000), (ms % 1000) * 1_000_000];
 
-/** Opt-in eval orchestration spans. Native provider spans are independently exported by the company setting. */
 export class EvalAttemptTrace {
   private readonly startedAt = Date.now();
   private readonly phases: PhaseSpan[] = [];
