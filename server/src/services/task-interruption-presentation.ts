@@ -29,8 +29,9 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
     state: "resolved", nextRetryAt: null, canRetry: false, userAction: null,
     sourceRunIds: [run.id], observedRunId: run.id };
   if (["done", "cancelled"].includes(issue.status) || (run.status === "succeeded" && !wait)) return base;
-  const userAction = !issue.assigneeAgentId ? "assign_agent" : input.approval ? "approval"
+  const userAction = !issue.assigneeAgentId ? "assign_agent" : input.approval || run.errorCode === "native_provider_approval_required" ? "approval"
     : isAiAuthenticationBlocked(run) ? "reconnect"
+      : run.errorCode === "native_provider_model_rejected" ? "choose_model"
       : [agent?.pauseReason, project?.pauseReason, company?.pauseReason].some(reason => reason === "budget" || reason === "budget_exceeded")
         ? "budget" : input.paused || project?.pausedAt || agent?.status === "paused" || company?.status === "paused" ? "resume" : null;
   if (userAction) return { ...base, responsibility: "user", state: "waiting_for_user", userAction };
@@ -39,7 +40,7 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
   if (retryAt && retryAt > now) return { ...base, state: "retry_scheduled",
     nextRetryAt: new Date(retryAt).toISOString(), canRetry: true };
   const activeObservation = action?.evidence.systemRecoveryActiveAt;
-  if (wait && system?.state === "running" && typeof activeObservation === "number" &&
+  if (system?.state === "running" && typeof activeObservation === "number" &&
       activeObservation > now - 45_000) return { ...base, state: "working" };
   if (wait && wait.requestedAt.getTime() > now - 10_000 && system?.state !== "exhausted")
     return { ...base, state: "working" };

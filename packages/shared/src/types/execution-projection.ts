@@ -104,7 +104,7 @@ export interface TaskInterruptionPresentation {
   state: "working" | "retry_scheduled" | "failed" | "waiting_for_user" | "resolved";
   nextRetryAt: string | null;
   canRetry: boolean;
-  userAction: "approval" | "reconnect" | "assign_agent" | "resume" | "budget" | null;
+  userAction: "approval" | "reconnect" | "assign_agent" | "choose_model" | "resume" | "budget" | null;
   sourceRunIds: string[];
   observedRunId: string | null;
 }

@@ -1,3 +1,11 @@
+import { prepareHeartbeatWorkspace } from "./heartbeat/workspace-preparation.js";
+import { createHeartbeatWorkspaceResolver, resolveExecutionWorkspaceReuseRequestForIssue } from "./heartbeat/workspaces.js";
+import { environmentService } from "./environments.js";
+import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
+import { executionWorkspaceService } from "./execution-workspaces.js";
+import { workspaceOperationService } from "./workspace-operations.js";
+import { instanceSettingsService } from "./instance-settings.js";
+import { projectTaskInterruption } from "./task-interruption-presentation.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { adoptSystemRecovery } from "./system-recovery.js";
 import { getStorageService } from "../storage/index.js";
@@ -276,6 +284,70 @@ describe("automatic retained workspace recovery", () => {
     expect(f.runtime.resumeRunLease).toHaveBeenCalledOnce();
     expect(await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, f.companyId), eq(workspaceOperations.phase, "workspace_recovery")))).toHaveLength(1);
   }, 30_000);
+
+  it("keeps verified copyback files in the preserved workspace on ordinary Retry", async () => {
+    const f = await seed();
+    await recoverRetainedWorkspace(f.input);
+    const source = await run(f.runId);
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: source.agentId, status: "running" });
+    const request = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: "board",
+      observedRunId: source.id, idempotencyKey: randomUUID() });
+    await heartbeatService(db).resumeTaskRetry(f.companyId, request.requestId!);
+    const [successor] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
+    expect(successor).toBeDefined();
+    const [receipt] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.heartbeatRunId, f.runId),
+      eq(workspaceOperations.phase, "workspace_recovery"), eq(workspaceOperations.status, "succeeded")));
+    const readiness = await readFreshWorkspaceReadiness(db, successor);
+    expect(readiness).toEqual({ mode: "resume_preserved_workspace", preservationReceiptId: receipt.id });
+    const [agent] = await db.select().from(agents).where(eq(agents.id, source.agentId));
+    const [issue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    const localEnvironment = await environmentService(db).ensureLocalEnvironment(f.companyId);
+    const prepared = await prepareHeartbeatWorkspace(db, {
+      run: successor, agent,
+      task: { issueRef: issue, issueId: f.issueId, context: { issueId: f.issueId }, responsibleUserId: "board",
+        previousSessionParams: null, freshWorkspace: readiness },
+      policy: { trustPreset: { kind: "standard", preset: "standard", boundary: null, sourcePresets: {} },
+        isolatedWorkspacesEnabled: false, effectiveExecutionWorkspaceMode: "shared_workspace",
+        requestedExecutionWorkspaceMode: "shared_workspace", useIsolatedTaskDirectory: false,
+        nativeChatWorkspaceScope: null, projectExecutionWorkspacePolicy: null, issueExecutionWorkspaceSettings: null,
+        environmentExecutionWorkspaceSettings: null, executionPolicy: { executionMode: "any" } },
+      environment: { selectedEnvironmentId: localEnvironment.id, localEnvironment, selectedEnvironmentForConfig: localEnvironment,
+        environmentResolution: { environmentId: localEnvironment.id, source: "default" },
+        resolvedInstanceSettings: await instanceSettingsService(db).get() },
+      config: { mergedConfig: { cwd: f.host }, configSnapshot: null, secretManifest: [] },
+      reuse: { requestedShouldReuseExisting: false, existingExecutionWorkspace: null, reusableExistingExecutionWorkspace: null,
+        workspaceReuseRequest: resolveExecutionWorkspaceReuseRequestForIssue({ issueExecutionWorkspaceId: null,
+          issueExecutionWorkspacePreference: null, existingExecutionWorkspaceStatus: null }),
+        nativeRecoveryExecutionWorkspaceId: null, persistedNativeExecutionInput: null, isDotRun: false, runOptions: {} },
+      services: { envOrchestrator: environmentRunOrchestrator(db), executionWorkspacesSvc: executionWorkspaceService(db),
+        workspaceOperationsSvc: workspaceOperationService(db), ...createHeartbeatWorkspaceResolver(db), appendRunEvent: vi.fn() },
+      controllerLease: { assertOwned: vi.fn(async () => {}) }, nativeRunnerPreparationSpans: [],
+    });
+    expect(prepared.executionWorkspace.cwd).toBe(f.host);
+    expect(await readFile(path.join(prepared.executionWorkspace.cwd, "saved.txt"), "utf8")).toBe("finished work\n");
+    expect(await readFile(path.join(f.host, "newer.txt"), "utf8")).toBe("newer local work\n");
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, request.requestId!));
+    expect(wake.payload?.taskRetry).toMatchObject({ strategy: "continue" });
+  }, 30_000);
+
+  it("projects active preservation without waiting input as working, and stale observations as failed", async () => {
+    const f = await seed();
+    const [issue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    const state = { ...createSystemRecovery(f.runId), state: "running" as const };
+    const recovery = { ...await action(f.actionId), evidence: { systemRecovery: state, systemRecoveryActiveAt: Date.now() } };
+    const input = { run: await run(f.runId), action: recovery, paused: false, approval: false };
+    expect(projectTaskInterruption(issue, input)).toMatchObject({ state: "working", intentId: null, canRetry: false });
+    expect(projectTaskInterruption(issue, input, Date.now() + 60_000)).toMatchObject({ state: "failed", canRetry: true });
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+  });
+
+  it.each([["native_provider_model_rejected", "choose_model"], ["native_provider_approval_required", "approval"]] as const)(
+    "projects %s as the meaningful user action %s", async (errorCode, userAction) => {
+      const f = await seed();
+      const [issue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+      expect(projectTaskInterruption(issue, { run: { ...await run(f.runId), errorCode }, paused: false, approval: false }))
+        .toMatchObject({ state: "waiting_for_user", responsibility: "user", userAction, canRetry: false });
+    });
 
   it("serializes concurrent repairs through the physical workspace lock", async () => {
     const f = await seed(); let ready!: () => void, release!: () => void;

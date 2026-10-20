@@ -1,5 +1,6 @@
 import { and, eq, sql, ne, or, inArray } from "drizzle-orm";
 import { agentWakeupRequests, heartbeatRuns, issueRecoveryActions, toolInvocations, type Db } from "@paperclipai/db";
+import { getSecretProvider } from "../secrets/provider-registry.js";
 import { readTaskRetryIntent } from "./task-retry.js";
 
 const record = (value: unknown): Record<string, unknown> =>
@@ -73,11 +74,21 @@ export async function priorRecoveryApiReceipt(db: Db, input: {
   for (const source of sources) {
     for (const receipt of Object.values(record(source.result?.apiToolReceipts)).map(record)) {
       if (receipt.operationId !== input.operationId) continue;
-      const result = record(receipt.result);
+      const result = receipt.encryptedResult
+        ? record(JSON.parse(await getSecretProvider("local_encrypted").resolveVersion({ material: record(receipt.encryptedResult), externalRef: null })))
+        : record(receipt.result);
       if (receipt.state !== "completed" || result.outcome === "unknown" || result.error === "api_outcome_unknown") {
         return { state: "pending", result: { ok: false, status: null, error: "api_outcome_unknown",
           outcome: "unknown", guidance: "Reconcile the existing operation before repeating it. Independent work and reads remain available." } };
       }
+      // A completed HTTP request is not necessarily a completed effect. A
+      // definite client rejection may be retried after the user fixes its cause.
+      // Preserve the transport owner's uncertainty classification above.
+      if (result.ok === false && typeof result.status === "number" &&
+          result.status >= 400 && result.status < 500 && result.status !== 408) continue;
+      if (result.ok !== true) return { state: "pending", result: { ok: false, status: null,
+        error: "api_outcome_unknown", outcome: "unknown",
+        guidance: "Reconcile the existing operation before repeating it. Independent work and reads remain available." } };
       if (receipt.digest === input.digest) completed = receipt;
     }
   }

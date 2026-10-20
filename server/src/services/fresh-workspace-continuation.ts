@@ -1,5 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { agentWakeupRequests, environmentLeases, heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
+import { verifiedWorkspaceRepairReceipt } from "./workspace-recovery-receipt.js";
 import { persistActivity } from "./activity-log.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { readTaskRetryIntent } from "./task-retry.js";
@@ -82,12 +83,16 @@ export async function readFreshWorkspaceReadiness(db: Db, run: Pick<typeof heart
       if (!chatWake || (run.contextSnapshot?.chatFailedRunRetry as Record<string, unknown> | undefined)?.actionId !== chatWake.id)
         return null;
     }
-    const [source] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    const [source] = await db.select().from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.agentId, run.agentId),
       eq(heartbeatRuns.id, intent.sourceRunId), sql`coalesce(${heartbeatRuns.nativeIssueId}::text,
         ${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
     )).limit(1);
     if (!source) throw new Error("Fresh retry source changed");
+    if (intent.strategy !== "fresh_isolated_workspace") {
+      const preservationReceiptId = await verifiedWorkspaceRepairReceipt(db, source);
+      if (preservationReceiptId) return { mode: "resume_preserved_workspace", preservationReceiptId };
+    }
     const leases = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
       eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, source.id),
     ));

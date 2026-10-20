@@ -523,6 +523,38 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     expect((await fixture.snapshot()).projects.some(p => p.name === "Uncertain")).toBe(false);
   });
 
+  it.each([403, 422])("a deliberate retry can execute an exact mutation previously rejected with %s", async status => {
+    const fixture = await server.fixture();
+    const args = { operationId: "POST /api/companies/{companyId}/projects", body: { name: "Authorized on retry" } };
+    const rejected = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(Response.json({ error: "Rejected before mutation" }, { status }));
+    try {
+      expect(await fixture.authority.execute({ tool: "call_api", callId: "rejected", arguments: args }))
+        .toMatchObject({ ok: false, status });
+    } finally { rejected.mockRestore(); }
+    await server.db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    const id = randomUUID(), intentId = randomUUID();
+    await server.db.insert(heartbeatRuns).values({ id, companyId: fixture.companyId, agentId: fixture.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: fixture.issueId, responsibleUserId: fixture.responsibleUserId,
+      contextSnapshot: { issueId: fixture.issueId, previousRunId: fixture.runId } });
+    await server.db.update(issues).set({ executionRunId: id }).where(eq(issues.id, fixture.issueId));
+    await server.db.insert(agentWakeupRequests).values({ id: intentId, companyId: fixture.companyId,
+      agentId: fixture.agentId, runId: id, source: "on_demand", reason: "task_retry", status: "coalesced",
+      payload: { issueId: fixture.issueId, taskRetry: { schema: "paperclip.task-retry.v1", generationId: intentId,
+        sourceRunId: fixture.runId, actorId: fixture.responsibleUserId ?? "board", strategy: "fresh_isolated_workspace" } } });
+    if (fixture.responsibleUserId) await initializeRunIdentity(server.db, { companyId: fixture.companyId, runId: id,
+      issueId: fixture.issueId, responsibleUserId: fixture.responsibleUserId, cause: "instruction" });
+    const authority = new PaperclipRunnerToolAuthority(server.db, { ...fixture, runId: id });
+    const network = vi.spyOn(globalThis, "fetch");
+    try {
+      const result = await authority.execute({ tool: "call_api", callId: "accepted-retry", arguments: args });
+      expect(result).toMatchObject({ ok: true, status: 201 });
+      expect(await authority.execute({ tool: "call_api", callId: "accepted-retry", arguments: args })).toEqual(result);
+      expect(network).toHaveBeenCalledTimes(1);
+    } finally { network.mockRestore(); }
+    expect((await fixture.snapshot()).projects.filter(project => project.name === "Authorized on retry")).toHaveLength(1);
+  });
+
   it("a fresh retry reuses the completed effect and fences a different unresolved effect across run identities", async () => {
     const fixture = await server.fixture();
     const args = { operationId: "POST /api/companies/{companyId}/projects", body: { name: "Already created" } };
