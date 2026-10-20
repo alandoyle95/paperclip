@@ -29,7 +29,7 @@ export interface FeedbackEvidence {
   companyId: string;
   entries: AgentCommentaryDetail[];
   invocations: FeedbackInvocation[];
-  diagnostics: Array<"feedback_read_failed" | "feedback_detail_failed" | "feedback_pagination_incomplete" | "run_read_failed" | "run_limit_reached" | "events_read_failed" | "deadline_reached">;
+  diagnostics: Array<"feedback_read_failed" | "feedback_detail_failed" | "feedback_pagination_incomplete" | "run_read_failed" | "run_detail_failed" | "run_limit_reached" | "events_read_failed" | "deadline_reached">;
   summary: FeedbackSummary;
 }
 
@@ -165,7 +165,7 @@ export async function collectAttemptFeedback(input: {
     if (offset === 9_900) evidence.diagnostics.push("feedback_pagination_incomplete");
   }
   await persist();
-  let runs: Array<{ id: string; runtimeMode?: string; status?: string }>;
+  let runs: Array<{ id: string; status?: string }>;
   try {
     runs = await get(`/api/companies/${input.companyId}/heartbeat-runs?limit=1000`);
     if (!Array.isArray(runs) || runs.some(run => typeof run.id !== "string")) throw new Error("Invalid runs");
@@ -177,7 +177,19 @@ export async function collectAttemptFeedback(input: {
   }
   summary.invocationCollection = runs.length < 1000 ? "complete" : "partial";
   if (runs.length >= 1000) evidence.diagnostics.push("run_limit_reached");
-  for (const run of runs) {
+  for (const listed of runs) {
+    // The public list projection omits runtimeMode. Fetch the bounded detail
+    // instead of treating every native run as an unobserved legacy helper.
+    let run: { id: string; status?: string; runtimeMode?: string } = listed;
+    try {
+      const detail = await get<typeof run>(`/api/heartbeat-runs/${encodeURIComponent(listed.id)}`);
+      if (detail.id !== listed.id) throw new Error("Invalid run detail");
+      run = detail;
+    } catch {
+      summary.invocationCollection = "partial";
+      summary.collection = summary.collection === "complete" ? "partial" : summary.collection;
+      evidence.diagnostics.push("run_detail_failed");
+    }
     if (!["succeeded", "interrupted", "failed", "cancelled", "timed_out"].includes(run.status ?? "")) {
       summary.collection = summary.collection === "complete" ? "partial" : summary.collection;
       summary.invocationCollection = "partial";

@@ -57,7 +57,8 @@ it("retains partial bodies and failed submissions without inventing persistence 
       if (path.endsWith("agent-commentary/1")) return entry("1");
       if (path.endsWith("agent-commentary/2")) throw new Error("body unavailable");
       if (path.includes("/events?")) return events;
-      return [{ id: "run", runtimeMode: "native", status: "failed" }];
+      if (path === "/api/heartbeat-runs/run") return { id: "run", runtimeMode: "native", status: "failed" };
+      return [{ id: "run", status: "failed" }];
     }),
   });
   expect(summary).toMatchObject({ collection: "partial", complaints: 2, bodiesCollected: 1, invocationCollection: "complete",
@@ -79,7 +80,8 @@ it.each([{ runtimeMode: "legacy", status: "succeeded" }, { runtimeMode: "native"
   const summary = await collectAttemptFeedback({ companyId: "company", persist: async () => {}, api: api(path => {
     if (path.includes("agent-commentary")) return { items: [], total: 0 };
     if (path.includes("/events?")) return [];
-    return [{ id: "run", ...run }];
+    if (path === "/api/heartbeat-runs/run") return { id: "run", ...run };
+    return [{ id: "run", status: run.status }];
   }) });
   expect(summary.invocationCollection).toBe("partial");
 });
@@ -120,4 +122,28 @@ it("groups feedback across retries without omitting incomplete collection and ke
   expect(feedback.review[0]!.occurrences).toBe(1);
   expect(JSON.stringify(aggregate)).not.toContain(entry("1").body);
   expect(isHistoricalBundlePathAllowed("evidence/case/attempt-1/snapshots/agent-feedback.json")).toBe(false);
+});
+
+it("uses run details for native coverage when the real list projection omits runtimeMode", async () => {
+  const reads: string[] = [];
+  const summary = await collectAttemptFeedback({ companyId: "company", persist: async () => {}, api: api(path => {
+    reads.push(path);
+    if (path.includes("agent-commentary")) return { items: [], total: 0 };
+    if (path.includes("/events?")) return [];
+    if (path === "/api/heartbeat-runs/run") return { id: "run", status: "succeeded", runtimeMode: "native" };
+    return [{ id: "run", status: "succeeded" }];
+  }) });
+  expect(reads).toContain("/api/heartbeat-runs/run");
+  expect(summary).toMatchObject({ collection: "complete", invocationCollection: "complete", runsInspected: 1 });
+});
+it("retains partial evidence if the run-detail lookup fails", async () => {
+  let retained: FeedbackEvidence | undefined;
+  const summary = await collectAttemptFeedback({ companyId: "company", persist: async value => { retained = structuredClone(value); }, api: api(path => {
+    if (path.includes("agent-commentary")) return { items: [], total: 0 };
+    if (path.includes("/events?")) return [event(1, "tool.execution.started", { name: "submit_complaint", executionId: "call" })];
+    if (path === "/api/heartbeat-runs/run") throw new Error("unavailable");
+    return [{ id: "run", status: "succeeded" }];
+  }) });
+  expect(summary).toMatchObject({ collection: "partial", invocationCollection: "partial", invocations: { unknown: 1 }, runsInspected: 1 });
+  expect(retained!.diagnostics).toContain("run_detail_failed");
 });
