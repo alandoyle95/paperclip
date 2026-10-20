@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AdapterEnvironmentTestContext, AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
 import { resolvePaperclipRunnerPiThinkingLevel } from "@paperclipai/adapter-utils";
-import { AI_AUTH_ENV_KEYS } from "../ai-connection-runtime.js";
 import { environmentTaskResultSchema } from "@paperclipai/plugin-sdk";
 import { probeNativeRunnerEnvironment, resolveClaudeEffort } from "../../vendor/paperclip-runner/index.js";
 import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
@@ -31,10 +30,10 @@ export async function probePluginRunnerEnvironment(context: AdapterEnvironmentTe
     const profile = resolvePaperclipRunnerProviderProfile(context.config);
     if (profile.provider !== "codex" && profile.provider !== "opencode" && profile.provider !== "acpx") throw new Error("Plugin Runner setup requires a workspace harness");
     const environment = (context.config.env ?? {}) as NodeJS.ProcessEnv;
-    if (!managed && (context.config.managedAiConnection || AI_AUTH_ENV_KEYS.some(key => environment[key]?.trim()))) {
+    if (!managed && (context.config.managedAiConnection || Object.values(environment).some(value => Boolean(value)))) {
       return { adapterType: "paperclip_runner", status: "fail", testedAt,
         checks: [{ code: "runner_account_selection_required", level: "error",
-          message: "Select a saved AI account, or remove draft authentication settings to test the installed account." }] };
+          message: "Select a saved AI account, or remove local environment overrides to test the installed account." }] };
     }
     const description = environmentTaskResultSchema.parse(await task({ kind: "describe" }));
     if (description.kind !== "description" || description.launchPreparationVersion !== 1 || description.projectAuthCheckVersion !== 1) throw new Error("Plugin Runner launch preparation v1 unavailable");

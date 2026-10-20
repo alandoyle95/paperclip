@@ -62,6 +62,8 @@ describe("plugin Runner setup", () => {
   });
   it.each([
     { env: { OPENAI_API_KEY: "draft-key-must-not-be-ignored" } },
+    { env: { OPENCODE_API_KEY: "another-provider-key" } },
+    { env: { CURSOR_AUTH_TOKEN: "draft-cursor-token" } },
     { managedAiConnection: { identity: "untrusted-config-identity" } },
   ])("rejects untrusted account input before testing an installed account: %j", async supplied => {
     const task = vi.fn();
