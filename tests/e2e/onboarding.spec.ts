@@ -126,7 +126,7 @@ test.describe("Onboarding wizard", () => {
 
     // The roster path saves on Choose adapter, then configures that same row.
     await page.goto(`/${company.issuePrefix}/agents/all`);
-    await page.getByRole("button", { name: "New Agent", exact: true }).click();
+    await page.getByRole("toolbar", { name: "Agents controls" }).getByRole("button", { name: "New Agent", exact: true }).click();
     await page.getByLabel("Agent name", { exact: true }).fill("Atlas");
     const nextSetupResponse = page.waitForResponse(response =>
       response.request().method() === "POST" && response.url().endsWith(`/api/companies/${company.id}/agents`));
@@ -668,4 +668,32 @@ test.describe("Onboarding wizard", () => {
 
     expect(pageErrors, pageErrors.join("\n")).toHaveLength(0);
   });
+  test("name-only setup saves the advanced Grok ACPX adapter on the same record", async ({ page }) => {
+    const previous = await (await page.request.get("/api/instance/settings/experimental")).json();
+    await page.request.patch("/api/instance/settings/experimental", { data: { enableNativeRunner: true } });
+    try {
+      const response = await page.request.post("/api/companies", { data: { name: `${COMPANY_NAME}-grok-setup` } });
+      expect(response.ok()).toBe(true);
+      const company = await response.json();
+      await page.goto(`/${company.issuePrefix}/agents/all`);
+      await page.getByRole("toolbar", { name: "Agents controls" }).getByRole("button", { name: "New Agent", exact: true }).click();
+      await page.getByLabel("Agent name", { exact: true }).fill("Galen");
+      const setupResponse = page.waitForResponse(result => result.request().method() === "POST"
+        && result.url().endsWith(`/api/companies/${company.id}/agents`));
+      await page.getByRole("button", { name: "Choose adapter", exact: true }).click();
+      const setup = await (await setupResponse).json();
+      await page.locator("summary").filter({ hasText: "Advanced" }).click();
+      await page.getByRole("button", { name: "Experimental harness", exact: true }).click();
+      await page.getByRole("option", { name: "Grok Build (Paperclip Runner)", exact: true }).click();
+      await page.getByRole("button", { name: "Configure agent", exact: true }).click();
+      await expect(page.getByRole("heading", { name: "Connect a model", exact: true })).toBeVisible();
+      expect(new URL(page.url()).searchParams.get("setupAgentId")).toBe(setup.id);
+      const saved = await (await page.request.get(`/api/agents/${setup.id}?companyId=${company.id}`)).json();
+      expect(saved).toMatchObject({ id: setup.id, adapterType: "paperclip_runner", pauseReason: "setup",
+        adapterConfig: { provider: "acpx", acpxAgent: "grok" }, metadata: { setupAdapterPending: false } });
+    } finally {
+      await page.request.patch("/api/instance/settings/experimental", { data: { enableNativeRunner: previous.enableNativeRunner === true } });
+    }
+  });
+
 });

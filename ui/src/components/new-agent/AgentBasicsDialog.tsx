@@ -141,8 +141,8 @@ export function AgentBasicsDialog({
           ...(step === "adapter" ? {
             adapterType: nextAdapter, runner: "auto" as const,
             adapterConfig: nextAdapter === "paperclip_runner" ? {
-              provider: nextProvider === "copilot" ? "acpx" : nextProvider,
-              ...(nextProvider === "copilot" ? { acpxAgent: "copilot" } : {}),
+              provider: ["claude", "grok", "copilot"].includes(nextProvider) ? "acpx" : nextProvider,
+              ...(["claude", "grok", "copilot"].includes(nextProvider) ? { acpxAgent: nextProvider } : {}),
             } : {},
             metadata: { ...agent.metadata, setupAdapterPending: false },
           } : {}),

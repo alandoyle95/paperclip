@@ -220,6 +220,9 @@ it.each(["grok", "opencode"])("preserves explicit experimental %s creation in Ad
   const query = new URL(state.navigate.mock.calls[0][0], "http://local").searchParams;
   expect(query.get("adapterType")).toBe("paperclip_runner");
   expect(query.get("runnerProvider")).toBe(provider);
+  expect(agents.update).toHaveBeenCalledWith(agents.create.mock.calls[0][1].setupId, expect.objectContaining({
+    adapterType: "paperclip_runner", adapterConfig: provider === "grok" ? { provider: "acpx", acpxAgent: "grok" } : { provider: "opencode" },
+  }), "company-1");
 });
 it.each(["gate off", "disabled adapter"])("hides experimental native creation when %s", async reason => {
   await act(async () => {
