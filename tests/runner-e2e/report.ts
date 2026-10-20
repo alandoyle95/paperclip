@@ -10,7 +10,7 @@ import {
 } from "node:fs/promises";
 import { runnerMatrix } from "./catalog.js";
 import { billingCoverageLabel, summarizeExecutionBilling } from "./billing.js";
-import { retainedCampaignAttempts } from "./attempt-accounting.js";
+import { isSelectedCarryForward, retainedCampaignAttempts } from "./attempt-accounting.js";
 import { renderRunnerE2EDashboard } from "./dashboard.js";
 import {
   buildRunnerCampaign,
@@ -179,6 +179,9 @@ async function main() {
   );
   const requestedCampaignId = process.env.PAPERCLIP_E2E_CAMPAIGN_ID ??
     (process.env.GITHUB_RUN_ID ? `gha-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT ?? "1"}` : undefined);
+  const selection = await readFile(path.join(root, "selected-artifacts.json"), "utf8")
+    .then(value => JSON.parse(value) as unknown)
+    .catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
   let excludedArtifacts = 0;
   const candidates = new Map<string, AggregatedResult[]>();
   for (const resultFile of resultFiles) {
@@ -192,7 +195,9 @@ async function main() {
       continue;
     const result = upgradeRunnerResult(parsed);
     if (requestedCampaignId && result.accountingIdentity &&
-        result.accountingIdentity.campaignId !== requestedCampaignId) {
+        result.accountingIdentity.campaignId !== requestedCampaignId &&
+        !isSelectedCarryForward({ requestedCampaignId, result, selection,
+          relativeResultPath: path.relative(root, resultFile).split(path.sep).join("/") })) {
       excludedArtifacts += 1;
       continue;
     }

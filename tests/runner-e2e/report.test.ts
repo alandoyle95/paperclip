@@ -634,3 +634,45 @@ describe("runner E2E report aggregation", () => {
     expect(junit).not.toContain("<?xml-stylesheet");
   });
 });
+
+it("retains selector-approved successes and their spending when only failed workflow jobs rerun", async () => {
+  const { selectRerunArtifacts } = await import("./select-rerun-artifacts.js");
+  const root = await mkdtemp(path.join(os.tmpdir(), "runner-partial-rerun-"));
+  cleanupDirectories.push(root);
+  const artifactRoot = path.join(root, "downloaded"), selectedRoot = path.join(root, "selected");
+  const executions = ["core-compatibility.runner-codex.local.message-marker", "core-compatibility.runner-claude.local.message-marker"];
+  const source = { sha: "a".repeat(40), ref: "master", workflowRunUrl: "https://github.com/paperclipai/paperclip/actions/runs/12345" };
+  for (const [index, executionId] of executions.entries()) {
+    const workflowAttempt = index + 1;
+    const artifactName = `runner-e2e-12345-${workflowAttempt}-${executionId}`;
+    const directory = path.join(artifactRoot, artifactName, `gha-12345-${workflowAttempt}-${executionId}`, "attempt-1");
+    await mkdir(directory, { recursive: true });
+    const result: RunnerE2EResult = {
+      schema: "paperclip.runner-e2e.result/v2", executionId, suiteId: "core-compatibility", source,
+      accountingIdentity: { campaignId: `gha-12345-${workflowAttempt}`, attemptId: `attempt-${index}` },
+      attempt: 1, status: "passed", profileId: index ? "runner-claude" : "runner-codex", environmentId: "local",
+      caseId: "message-marker", provider: index ? "claude" : "codex", model: "fixture", runtimeMode: "native",
+      startedAt: "2026-10-20T00:00:00Z", finishedAt: "2026-10-20T00:00:01Z", durationMs: 1000, cleanup: "passed",
+      usage: { inputTokens: 100, outputTokens: 10, costUsd: 0.01 * workflowAttempt },
+    };
+    await writeFile(path.join(directory, "result.json"), JSON.stringify(result));
+    await writeFile(path.join(directory, "evidence-manifest.json"), JSON.stringify({ files: ["final-state.png"], leaks: [], missing: [] }));
+    await writeFile(path.join(directory, "final-state.png"), "fixture-png");
+  }
+  await selectRerunArtifacts({ artifactRoot, selectedRoot, expectedExecutionIds: executions, workflowRunId: "12345", workflowRunAttempt: 2,
+    sourceSha: source.sha, sourceRef: source.ref, workflowRunUrl: source.workflowRunUrl,
+    jobs: { attempts: [{ run_attempt: 1, run_started_at: "2026-10-20T00:00:00Z" }, { run_attempt: 2, run_started_at: "2026-10-20T01:00:00Z" }],
+      jobs: [{ name: executions[0]!, run_attempt: 1, started_at: "2026-10-20T00:01:00Z" },
+        { name: executions[1]!, run_attempt: 1, started_at: "2026-10-20T00:01:00Z" },
+        { name: executions[1]!, run_attempt: 2, started_at: "2026-10-20T01:01:00Z" }] },
+  });
+  const output = path.join(root, "report");
+  await execFileAsync(process.execPath, [path.join(repositoryRoot, "cli/node_modules/tsx/dist/cli.mjs"), path.join(repositoryRoot, "tests/runner-e2e/report.ts")], {
+    cwd: repositoryRoot, env: { ...process.env, PAPERCLIP_E2E_CAMPAIGN_ID: "gha-12345-2", PAPERCLIP_RUNNER_E2E_REPORT_ROOT: selectedRoot,
+      PAPERCLIP_RUNNER_E2E_REPORT_OUT: output, PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: JSON.stringify(executions) },
+  });
+  const campaign = JSON.parse(await readFile(path.join(output, "normalized-results.json"), "utf8"));
+  expect(campaign).toMatchObject({ passed: 2, failed: 0, billing: { reportedLlmCostUsd: 0.03 }, accounting: { excludedArtifacts: 0 } });
+  expect(campaign.accounting.attempts).toHaveLength(2);
+  expect(campaign.results[0].accountingIdentity.campaignId).toBe("gha-12345-1");
+});

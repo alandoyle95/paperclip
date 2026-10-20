@@ -2,6 +2,31 @@ import { createHash } from "node:crypto";
 import { summarizeExecutionBilling } from "./billing.js";
 import type { RunnerE2EAttemptReceipt, RunnerE2ECampaignAccounting, RunnerE2EResult } from "./types.js";
 
+/** Only the trusted artifact selector may carry an earlier workflow cell forward. */
+export function isSelectedCarryForward(input: {
+  requestedCampaignId: string; result: RunnerE2EResult; relativeResultPath: string; selection: unknown;
+}): boolean {
+  const s = input.selection as Record<string, unknown> | null;
+  if (!s || s.version !== 1 || typeof s.workflowRunId !== "string" || !/^[0-9]+$/.test(s.workflowRunId)
+      || !Number.isSafeInteger(s.workflowRunAttempt) || Number(s.workflowRunAttempt) < 1
+      || input.requestedCampaignId !== `gha-${s.workflowRunId}-${s.workflowRunAttempt}` || !Array.isArray(s.selections)) return false;
+  const source = input.result.source;
+  if (!source || !source.sha || !source.ref || !source.workflowRunUrl
+      || source.sha !== s.sourceSha || source.ref !== s.sourceRef || source.workflowRunUrl !== s.workflowRunUrl) return false;
+  if (input.relativeResultPath.split("/").some(part => !part || part === "." || part === "..")) return false;
+  return s.selections.some(value => {
+    if (!value || typeof value !== "object") return false;
+    const selected = value as Record<string, unknown>;
+    const attempt = selected.workflowAttempt;
+    const campaign = `gha-${s.workflowRunId}-${attempt}`;
+    const artifact = `runner-e2e-${s.workflowRunId}-${attempt}-${input.result.executionId}`;
+    return selected.executionId === input.result.executionId && Number.isSafeInteger(attempt)
+      && Number(attempt) >= 1 && Number(attempt) < Number(s.workflowRunAttempt)
+      && selected.artifactName === artifact && input.result.accountingIdentity?.campaignId === campaign
+      && input.relativeResultPath.startsWith(`${artifact}/${campaign}-${input.result.executionId}/`);
+  });
+}
+
 /** Legacy CI artifacts can be grouped by run URL; unscoped local runs cannot. */
 function scope(result: RunnerE2EResult): string | undefined {
   return result.accountingIdentity?.campaignId ?? result.source?.workflowRunUrl ?? undefined;

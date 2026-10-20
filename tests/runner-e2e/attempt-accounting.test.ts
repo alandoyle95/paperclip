@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCampaignAccounting, retainedCampaignAttempts } from "./attempt-accounting.js";
+import { buildCampaignAccounting, isSelectedCarryForward, retainedCampaignAttempts } from "./attempt-accounting.js";
 import { buildRunnerCampaign, campaignHistoryRecord } from "./history.js";
 import type { RunnerE2EResult } from "./types.js";
 
@@ -67,4 +67,21 @@ describe("retained attempt accounting", () => {
     expect(() => buildCampaignAccounting({ results: [selected], attempts: [selected,
       { ...selected, usage: { inputTokens: 20, costUsd: 0.1 } }] })).toThrow("Conflicting accounting receipts");
   });
+});
+
+it("requires exact selector provenance before admitting a carried workflow result", () => {
+  const retained = result(1, 0.01, { accountingIdentity: { campaignId: "gha-123-1", attemptId: "a" },
+    source: { sha: "source", ref: "master", workflowRunUrl: "https://github.com/paperclipai/paperclip/actions/runs/123" } });
+  const artifactName = `runner-e2e-123-1-${retained.executionId}`;
+  const input = { requestedCampaignId: "gha-123-2", result: retained,
+    relativeResultPath: `${artifactName}/gha-123-1-${retained.executionId}/attempt-1/result.json`,
+    selection: { version: 1, workflowRunId: "123", workflowRunAttempt: 2, sourceSha: retained.source!.sha,
+      sourceRef: retained.source!.ref, workflowRunUrl: retained.source!.workflowRunUrl,
+      selections: [{ executionId: retained.executionId, workflowAttempt: 1, artifactName }] } };
+  expect(isSelectedCarryForward(input)).toBe(true);
+  expect(isSelectedCarryForward({ ...input, selection: undefined })).toBe(false);
+  expect(isSelectedCarryForward({ ...input, requestedCampaignId: "gha-999-2" })).toBe(false);
+  expect(isSelectedCarryForward({ ...input, relativeResultPath: `unselected/${input.relativeResultPath}` })).toBe(false);
+  expect(isSelectedCarryForward({ ...input, result: { ...retained, source: { ...retained.source!, sha: "other" } } })).toBe(false);
+  expect(isSelectedCarryForward({ ...input, result: { ...retained, accountingIdentity: { campaignId: "gha-123-3", attemptId: "a" } } })).toBe(false);
 });
