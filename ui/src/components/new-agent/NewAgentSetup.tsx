@@ -565,12 +565,17 @@ function Setup({
     setScreen(binding || !connectionAdapter ? "runtime" : "connect");
   }, [savedAgent.data, companyId, connectionAdapter]);
 
-  async function saveDraft(nextConnection = connection, exit = false) {
+  async function saveDraft(nextConnection = connection, exit = false, testedConfig?: Record<string, unknown>) {
     if (!created || completed) return;
     const binding = runtimeAiBinding ?? nextConnection?.aiConnection;
-    const config = buildConfig(nextConnection);
+    const config = testedConfig ?? buildConfig(nextConnection);
     const staged: Array<{ remove: () => Promise<unknown> }> = [];
-    let saved = false;
+    let submitted = false;
+    const rememberCredentials = () => {
+      if (!staged.length) return;
+      setApiKey("");
+      setProviderBinding((adapterType === "hermes_gateway" ? config.apiKey : (config.env as Record<string, EnvBinding>)?.[envKey]) as EnvBinding);
+    };
     try {
       for (const [key, value] of Object.entries(pendingCredentials(nextConnection))) {
         const secret = await (connectionAdapter ? storeProviderApiKey : storeOrganizationApiKey)(companyId, key, value);
@@ -578,22 +583,26 @@ function Setup({
         if (adapterType === "hermes_gateway" && key === "API_SERVER_KEY") config.apiKey = secret.binding;
         else config.env = { ...((config.env as object) ?? {}), [key]: secret.binding };
       }
+      submitted = true;
       const agent = await agentsApi.update(created.id, {
         adapterType: requestAdapterType, runner, adapterConfig: config,
         defaultEnvironmentId: environmentOverride || (forced.forced || managedOnly ? environmentId : null),
         runtimeConfig: { ...created.runtimeConfig, ...(binding ? { aiConnection: binding } : {}) },
         ...(nextConnection?.applyStoredClaudeLogin ? { applyStoredClaudeLogin: true } : {}),
       }, companyId);
-      saved = true;
-      if (staged.length) {
-        setApiKey("");
-        setProviderBinding((adapterType === "hermes_gateway" ? config.apiKey : (config.env as Record<string, EnvBinding>)?.[envKey]) as EnvBinding);
-      }
+      rememberCredentials();
       setCreated(agent);
       cache.setQueryData(queryKeys.agents.detail(agent.id), agent);
       if (exit) navigate("/agents/all");
-    } finally {
-      if (!saved) await Promise.all(staged.map(secret => secret.remove()));
+      return agent;
+    } catch (cause) {
+      if (submitted && !(cause instanceof ApiError && cause.status >= 400 && cause.status < 500 && cause.status !== 408)) {
+        rememberCredentials();
+      } else {
+        try { await Promise.all(staged.map(secret => secret.remove())); }
+        catch { throw new Error(`${cause instanceof Error ? cause.message : "Could not save agent setup."} Could not remove an unused setup credential. Remove it from Secrets before retrying.`); }
+      }
+      throw cause;
     }
   }
 
@@ -673,34 +682,13 @@ function Setup({
     savingRef.current = true;
     setSaving(true);
     setError(null);
-    const staged: Array<{ remove: () => Promise<unknown> }> = [];
-    let hired = false;
     try {
       const credentials = pendingCredentials();
       const config = (connectionAdapter && testState === "idle") || Object.keys(credentials).length
         ? await runTest()
         : preparedConfig();
       if (!config) return;
-      for (const [key, value] of Object.entries(credentials)) {
-        const store = connectionAdapter
-          ? storeProviderApiKey
-          : storeOrganizationApiKey;
-        const secret = await store(companyId, key, value);
-        staged.push(secret);
-        if (adapterType === "hermes_gateway" && key === "API_SERVER_KEY")
-          config.apiKey = secret.binding;
-        else
-          config.env = {
-            ...((config.env as object) ?? {}),
-            [key]: secret.binding,
-          };
-      }
-      if (staged.length) {
-        await agentsApi.update(created.id, { adapterType: requestAdapterType, runner, adapterConfig: config }, companyId);
-        staged.length = 0;
-        setApiKey("");
-        setProviderBinding((adapterType === "hermes_gateway" ? config.apiKey : (config.env as Record<string, EnvBinding>)?.[envKey]) as EnvBinding);
-      }
+      const saved = Object.keys(credentials).length ? await saveDraft(connection, false, config) : undefined;
       const response = await agentsApi.hire(companyId, {
         setupAgentId: created.id,
         name: created.name,
@@ -709,7 +697,7 @@ function Setup({
         reportsTo: created.reportsTo,
         adapterType: requestAdapterType,
         ...(["codex_local", "claude_local"].includes(adapterType) && runner !== "auto" ? { runner } : {}),
-        adapterConfig: config,
+        adapterConfig: saved?.adapterConfig ?? config,
         defaultEnvironmentId:
           environmentOverride ||
           (forced.forced || managedOnly ? environmentId : null),
@@ -722,7 +710,6 @@ function Setup({
           ? { applyStoredClaudeLogin: true }
           : {}),
       });
-      hired = true;
       setApiKey("");
       setConnection(null);
       setCreated(response.agent);
@@ -747,16 +734,6 @@ function Setup({
         cause instanceof Error ? cause.message : "Could not create the agent.",
       );
     } finally {
-      if (!hired) {
-        try {
-          await Promise.all(staged.map((secret) => secret.remove()));
-        } catch {
-          setError(
-            (original) =>
-              `${original ? `${original} ` : ""}Could not remove an unused setup credential. Remove it from Secrets before retrying.`,
-          );
-        }
-      }
       void cache.invalidateQueries({
         queryKey: queryKeys.secrets.myUserSecrets(companyId),
       });

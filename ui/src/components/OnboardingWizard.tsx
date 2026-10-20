@@ -2026,7 +2026,7 @@ function OnboardingWizardInner({
     return config;
   }
 
-  const setupSnapshot = step === 4 && setupPrepared && setupAgentId && !createdAgentId && sourceSelected && runnerDiscoveryReady && !loading
+  const setupSnapshot = step === 4 && setupPrepared && setupAgentId && !createdAgentId && sourceSelected && runnerDiscoveryReady && (!isCopilot || copilotModelReady) && !loading
     ? JSON.stringify({ name: agentName.trim() || AGENT_ROLE_LABELS[agentRole], appearance: agentAppearance,
       adapterType, runner, adapterConfig: buildAdapterConfig(Boolean(apiKeySecretRef.current?.binding)),
       defaultEnvironmentId: resolvedLoginEnvironmentId,

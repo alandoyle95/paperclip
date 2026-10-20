@@ -453,6 +453,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       mockAgentsApi.adapterModels.mockResolvedValue([{ id: "gpt-5.6-luna", label: "GPT 5.6 Luna" }]);
       mockAdapterBuild.buildAdapterConfig.mockImplementation((...args: unknown[]) => {
         const values = args[0] as { adapterSchemaValues: Record<string, unknown>; model: string };
+        if (!values.model) throw new Error("Copilot requires a selected model");
         return { ...values.adapterSchemaValues, model: values.model };
       });
       const { root, queryClient } = render();
@@ -469,6 +470,19 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await flushReact();
       return { root, click };
     }
+
+    it("keeps Copilot selection available while its setup has no model", async () => {
+      const { root, click } = await openCopilot();
+      try {
+        expect(mockAgentsApi.create).toHaveBeenCalled();
+        expect(mockAgentsApi.update).not.toHaveBeenCalled();
+        await click("Use saved Copilot connection");
+        await vi.waitFor(() => expect(document.body.querySelector('[aria-label="Copilot model"]')?.textContent).toContain("GPT 5.6 Luna"));
+        const model = document.body.querySelector('[aria-label="Copilot model"]') as HTMLSelectElement;
+        await act(async () => { model.value = "gpt-5.6-luna"; model.dispatchEvent(new Event("change", { bubbles: true })); });
+        await vi.waitFor(() => expect(mockAgentsApi.update).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ adapterConfig: expect.objectContaining({ model: "gpt-5.6-luna" }) }), "c1"));
+      } finally { await act(async () => root.unmount()); }
+    });
 
     it.each(["choices", "authentication error"])("refreshes Copilot onboarding after reconnecting the same binding with cached %s", async (cachedState) => {
       const { root, click } = await openCopilot();

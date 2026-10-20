@@ -1070,7 +1070,7 @@ describe("New agent setup", () => {
     await render();
     await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
     await fill("OPENROUTER_API_KEY", "new-key");
-    api.update.mockRejectedValueOnce(new Error("Creation rejected"));
+    api.update.mockRejectedValueOnce(new ApiError("Creation rejected", 422, null));
     await click("Finish setup");
     expect(secrets.remove).toHaveBeenCalledWith("org-secret-1");
     expect(container.textContent).toContain("Creation rejected");
@@ -1079,7 +1079,7 @@ describe("New agent setup", () => {
     await render();
     await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
     await fill("OPENROUTER_API_KEY", "new-key");
-    api.update.mockRejectedValueOnce(new Error("Agent quota exceeded"));
+    api.update.mockRejectedValueOnce(new ApiError("Agent quota exceeded", 422, null));
     secrets.remove.mockRejectedValueOnce(new Error("Cleanup unavailable"));
     await click("Finish setup");
     expect(container.textContent).toContain("Agent quota exceeded");
@@ -1096,6 +1096,24 @@ describe("New agent setup", () => {
     await click("Finish setup");
     expect(secrets.create).toHaveBeenCalledTimes(1);
     expect(api.hire).toHaveBeenCalledTimes(2);
+  });
+  it.each(["Save & exit", "Finish setup"])("retains a saved key when the %s PATCH response is lost", async action => {
+    await render("hermes_gateway");
+    await fill("Hermes API base URL", "https://hermes.example.test");
+    await fill("API_SERVER_KEY", "uncertain-save-key");
+    const persist = api.update.getMockImplementation()!;
+    api.update.mockImplementationOnce(async (...args) => {
+      await persist(...args);
+      throw new Error("Save response lost");
+    });
+    await click(action);
+    expect(container.textContent).toContain("Save response lost");
+    expect(secrets.remove).not.toHaveBeenCalled();
+    const setupId = api.create.mock.calls[0][1].setupId;
+    expect((await api.get(setupId)).adapterConfig.apiKey).toMatchObject({ type: "secret_ref", secretId: "org-secret-1" });
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].adapterConfig.apiKey).toMatchObject({ type: "secret_ref", secretId: "org-secret-1" });
+    expect(secrets.create).toHaveBeenCalledTimes(1);
   });
   it("requires an explicit provider/model for Pi", async () => {
     await render();
