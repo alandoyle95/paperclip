@@ -90,3 +90,17 @@ it("records an explicit empty review without implying that uncaptured feedback w
   validateCampaignFeedbackReview(campaign, campaign.feedbackReview);
   expect(campaignFeedbackReviewText(campaign)).toContain("1 attempts have incomplete collection");
 });
+
+it("refreshes an older summary that kept the awaiting-review count inline", async () => {
+  const campaign = fixture(); campaign.feedbackReview = reviewed(campaign);
+  const root = await mkdtemp(path.join(tmpdir(), "feedback-legacy-summary-"));
+  try {
+    await writeFile(path.join(root, "normalized-results.json"), JSON.stringify(campaign));
+    await writeFile(path.join(root, "summary.md"), "# Existing campaign\n\nFeedback across retained attempts: 2 complaints; 1 suggestions; 3 distinct items awaiting review; 1 attempts with incomplete collection.\n");
+    await regenerateRunnerDashboard({ bundle: root, historyFile: null });
+    const summary = await readFile(path.join(root, "summary.md"), "utf8");
+    expect(summary).toContain("2 complaints; 1 suggestions; 1 attempts with incomplete collection.");
+    expect(summary).toContain(campaignFeedbackReviewText(campaign));
+    expect(summary).not.toContain("awaiting review");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

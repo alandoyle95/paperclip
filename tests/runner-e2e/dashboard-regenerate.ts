@@ -178,7 +178,9 @@ export async function regenerateRunnerDashboard(input: {
       evidenceErrors: normalized.results[index]?.evidenceErrors ?? [],
     })),
   };
-  const summary = await readFile(path.join(bundle, "summary.md"), "utf8").catch((error: NodeJS.ErrnoException) => {
+  const summary = await readFile(path.join(bundle, "summary.md"), "utf8").then(text => text.replace(
+    /^(Feedback across retained attempts:.*?); [0-9]+ distinct items awaiting review;/m, "$1;",
+  )).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return undefined;
     throw error;
   });
