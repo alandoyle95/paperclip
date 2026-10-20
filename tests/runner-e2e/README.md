@@ -2572,3 +2572,31 @@ never remove a live writer's lock. Resuming a campaign cannot silently change it
 limits. The ledger rejects unreviewed fields and contains no prompts, responses,
 headers, or credentials. Cross-source request joins must use a verified request
 identity; ambiguous provider-request joins are rejected rather than double counted.
+
+### Opt-in Braintrust traces
+
+Set `PAPERCLIP_E2E_BRAINTRUST_PROJECT_ID` to the destination project UUID and
+provide `BRAINTRUST_API_KEY` securely to the launcher. An ambient key alone does
+not enable export. The launcher includes this key in secret scans and removes
+Braintrust variables from the server's inherited environment. Fixture setup
+saves the company's native observability configuration through the public,
+revision-fenced API using a non-Playwright sensitive request, before credential,
+agent, and setup-probe creation. The onboarding flow installs it immediately
+after company creation. The existing company setting controls native capture.
+
+Each ordinary `runner.spec.ts` attempt records orchestration spans for setup,
+execution, feedback, and cleanup, and exports protobuf over HTTPS with a ten
+second deadline and no redirect/retry. `snapshots/braintrust-trace.json` checkpoints
+the identifiers/configuration and final export receipt. Normalized results retain
+the receipt, including failed exports. Export failure does not rewrite the product
+verdict; operational qualification must separately require accepted and verified
+traces. A killed worker can leave a pending receipt, not a claimed successful export.
+
+`accepted` means the OTLP receiver accepted the batch; it does not establish that
+Braintrust indexed it or that native agent spans arrived. Search the project for
+`paperclip.eval.attempt_id` and its trace ID, then verify native records using the
+company ID and `paperclip.eval.run_ids`. Native spans currently have their own
+trace context; they are correlated by these identities, not automatically children
+of the orchestration span. Orchestration spans intentionally omit model usage and
+cost metrics to avoid duplicating provider-span charges. The separate provider
+connection suite and standalone judges do not yet use this attempt exporter.

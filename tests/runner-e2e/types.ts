@@ -334,6 +334,7 @@ export interface RunnerE2EResult {
   runtimeUsage?: RunnerE2ERuntimeUsage;
   billing?: RunnerE2EBillingSummary;
   feedback?: import("./feedback.js").FeedbackSummary;
+  tracing?: import("./braintrust.js").EvalTraceReceipt;
   matcherResults?: Array<{
     matcher: Matcher;
     passed: boolean;
@@ -406,6 +407,7 @@ export interface RunnerE2EAttemptReceipt {
   cleanup: RunnerE2EResult["cleanup"];
   billing: RunnerE2EBillingSummary;
   feedback?: import("./feedback.js").FeedbackSummary;
+  tracing?: import("./braintrust.js").EvalTraceReceipt;
 }
 
 export interface RunnerE2ECampaignAccounting {

@@ -124,6 +124,11 @@ const billing = shape({
   observedAndEstimatedCostUsd: nullable(number),
   complete: boolean,
 });
+const tracing = shape({
+  projectId: string, traceId: string, spanId: string, status: oneOf("pending", "accepted", "failed"),
+  verification: oneOf("unverified"), nativeConfiguration: oneOf("not_started", "configured", "failed"),
+  companyId: optional(string), revision: optional(string), errorCode: optional(string), httpStatus: optional(number),
+});
 const feedback = shape({
   version: (value, at) => { if (value !== 1) invalid(at); },
   collection: oneOf("complete", "partial", "unavailable", "not_started"),
@@ -144,7 +149,7 @@ export function validateCampaignAccounting(value: RunnerE2ECampaignAccounting) {
     attempts: array(shape({
       id: string, executionId: string, attempt: integer,
       startedAt: date, finishedAt: date, durationMs: number,
-      status: oneOf("passed", "failed"), cleanup: oneOf("not_started", "passed", "failed"), billing, feedback: optional(feedback),
+      status: oneOf("passed", "failed"), cleanup: oneOf("not_started", "passed", "failed"), billing, feedback: optional(feedback), tracing: optional(tracing),
     })),
   })(value, "accounting");
   if (new Set(value.attempts.map(attempt => attempt.id)).size !== value.attempts.length) invalid("accounting.attempts duplicate id");
@@ -260,7 +265,7 @@ const fields = {
   usage: optional(nullable(object)),
   runtimeUsage: optional(runtime),
   billing: optional(billing),
-  feedback: optional(feedback),
+  feedback: optional(feedback), tracing: optional(tracing),
   matcherResults: optional(
     array(shape({ matcher, passed: boolean, detail: string })),
   ),

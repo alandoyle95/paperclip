@@ -1,3 +1,4 @@
+import { EVAL_OBSERVABILITY_SECRET_NAMES } from "./braintrust.js";
 import { runnerE2EPlaywrightInvocation } from "./web-server-command.js";
 import { verifyInstalledDaytonaPlugin } from "./installed-daytona-plugin.js";
 import { assertInstalledCliSelection, assertInstalledStartupOnly, verifyInstalledCli } from "./installed-cli.js";
@@ -526,7 +527,7 @@ async function runAttempt(input: {
     const toolActionSigningSecret = secret(48);
     const betterAuthSecret = secret(48);
     const credentialSources = {
-      ...Object.fromEntries(CREDENTIAL_NAMES.map((name) => [name, process.env[name]])),
+      ...Object.fromEntries([...CREDENTIAL_NAMES, ...EVAL_OBSERVABILITY_SECRET_NAMES].map((name) => [name, process.env[name]])),
       PAPERCLIP_AGENT_JWT_SECRET: agentJwtSecret,
       PAPERCLIP_DECISION_SIGNING_SECRET: decisionSigningSecret,
       PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: toolActionSigningSecret,
@@ -1104,7 +1105,7 @@ async function main() {
     attempts,
   });
   const campaignSecrets = normalizedSecrets(
-    CREDENTIAL_NAMES.map((name) => process.env[name]),
+    [...CREDENTIAL_NAMES, ...EVAL_OBSERVABILITY_SECRET_NAMES].map((name) => process.env[name]),
   );
   const safeCampaign = sanitizeJson(
     campaign,

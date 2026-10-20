@@ -438,3 +438,10 @@ the collected prefix. Persistence shares the overall collection deadline and
 receives an abort signal. The fixture writes an abortable temporary
 snapshot before replacing the last complete checkpoint, so a stalled write does
 not overwrite earlier evidence with a partially written JSON file.
+
+Braintrust export requires an explicit eval project UUID. Native capture includes
+prompts, responses, and tool content only after that opt-in configures the isolated
+company's observability destination. The ingestion key crosses the public API via
+Node fetch, outside Playwright tracing, and is included in launcher evidence
+redaction. Orchestration spans contain identifiers, phase timing, outcome, and
+feedback counts; they never contain provider credentials or feedback bodies.

@@ -143,6 +143,7 @@ export async function setupLiveFixtures(input: {
   workspacePath: string;
   credentials: Partial<Record<CredentialName, string>>;
   daytonaImage?: string;
+  onCompanyCreated?: (companyId: string) => Promise<void>;
 }): Promise<LiveFixtureValues> {
   const { api, execution } = input;
   const receiptSmoke = execution.suite.id === "case-handoffs" && execution.task.id === caseReceiptTask.id;
@@ -166,7 +167,7 @@ export async function setupLiveFixtures(input: {
   registry.register<CompanyRecord>({
     id: "company",
     async setup() {
-      return api.post<CompanyRecord>("/api/companies", {
+      const company = await api.post<CompanyRecord>("/api/companies", {
         name: `Runner E2E ${execution.id} ${input.executionNonce}`,
         description: "Ephemeral paid full-stack runner acceptance fixture",
         budgetMonthlyCents: receiptSmoke ? CASE_RECEIPT_BUDGET_CENTS
@@ -175,6 +176,8 @@ export async function setupLiveFixtures(input: {
           : execution.suite.id === "task-titles" ? TASK_TITLE_BUDGET_CENTS
           : ["stock-harness", "task-workspaces", "case-handoffs"].includes(execution.suite.id) ? 1_000 : 0,
       });
+      await input.onCompanyCreated?.(company.id);
+      return company;
     },
     async teardown() {
       // The isolated instance/database is removed by the launcher. Do not call

@@ -1,3 +1,4 @@
+import { EvalAttemptTrace, evalBraintrustConfig, EVAL_OBSERVABILITY_SECRET_NAMES } from "./braintrust.js";
 import { runCaseHandoffsFlow } from "./case-handoffs-flow.js";
 import { runCaseReceiptFlow } from "./case-receipt-flow.js";
 import { runTaskWorkspacesFlow } from "./task-workspaces-flow.js";
@@ -604,7 +605,17 @@ for (const execution of executions) {
       verifyNativeInstructionPreflight(process.env[NATIVE_INSTRUCTION_PREFLIGHT_ENV]);
     }
     const credentials = credentialValues();
-    const secrets = normalizedSecrets(Object.values(credentials));
+    const secrets = normalizedSecrets([...Object.values(credentials), ...EVAL_OBSERVABILITY_SECRET_NAMES.map(name => process.env[name])]);
+    const traceConfig = evalBraintrustConfig(process.env);
+    const trace = traceConfig ? new EvalAttemptTrace(traceConfig, {
+      campaignId: process.env.PAPERCLIP_E2E_ACCOUNTING_CAMPAIGN_ID ?? "",
+      attemptId: process.env.PAPERCLIP_E2E_ACCOUNTING_ATTEMPT_ID ?? "",
+      executionId: execution.id, provider: execution.profile.provider, model: execution.profile.model, environment: execution.environment.id,
+    }) : undefined;
+    const saveTrace = async () => { if (trace) await writeSanitizedJson(snapshotsDir, "braintrust-trace.json", trace.snapshot(), secrets); };
+    const onCompanyCreated = async (id: string) => {
+      if (trace) { try { await trace.configureCompany(api, id); } finally { await saveTrace(); } }
+    };
     const api = new RunnerApi(request);
     const companyRunFlow = execution.suite.id === "task-titles" || ["plan_task_guidance", "blocker_guidance", "continuation_accounting", "continuation", "context_integrity", "repository_skills", "agent_chat", "everyday_workflow", "first_task", "instruction_persistence", "pi_native", "pi_controls", "copilot_protection", "cursor_native", "native_active_stop", "native_provider_loss", "public_mcp", "case_handoff"].includes(execution.task.flow);
     const publicMcpUsage = execution.task.flow === "public_mcp" ? assistantUsage(execution.profile.provider === "claude" ? "anthropic" : "openai", execution.profile.model) : undefined;
@@ -879,6 +890,8 @@ for (const execution of executions) {
     });
 
     try {
+      trace?.phase("setup");
+      await saveTrace();
       if (execution.task.flow === "public_mcp") publicMcpUserId = await establishPublicMcpSession(api, page, secrets);
       if (execution.suite.id === "stock-harness") {
         const receipt = verifyStockHarnessPreflight(process.env[STOCK_PREFLIGHT_ENV]);
@@ -908,7 +921,7 @@ for (const execution of executions) {
         await setupGitStreamingWorkspace(workspacePath);
       }
       fixtures = execution.task.flow === "first_task"
-        ? await setupFirstTaskFixtures({ page, api, execution, nonce, credentials, daytonaImage: process.env.PAPERCLIP_E2E_DAYTONA_IMAGE, deadlineAt: startedAtMs + deadlineMs, observe: value => { fixtures = value; } })
+        ? await setupFirstTaskFixtures({ page, api, execution, nonce, credentials, daytonaImage: process.env.PAPERCLIP_E2E_DAYTONA_IMAGE, deadlineAt: startedAtMs + deadlineMs, observe: value => { fixtures = value; }, onCompanyCreated })
         : await setupLiveFixtures({
         api,
         execution,
@@ -916,7 +929,9 @@ for (const execution of executions) {
         workspacePath,
         credentials,
         daytonaImage: process.env.PAPERCLIP_E2E_DAYTONA_IMAGE,
+        onCompanyCreated,
       });
+      trace?.phase("execution");
 
       if (["native-completion", NATIVE_INSTRUCTION_SUITE].includes(execution.suite.id)) {
         const receipt = await captureNativeDefault({ api, agentId: fixtures.agent.id, companyId: fixtures.company.id });
@@ -3023,6 +3038,7 @@ for (const execution of executions) {
         }
       }
     } finally {
+      trace?.phase("cleanup", Boolean(primaryError));
       await reviewProvider?.close();
       try {
         await writeSanitizedJson(
@@ -3081,6 +3097,7 @@ for (const execution of executions) {
             },
             assertions: beforeEnvironmentTeardownAssertions,
             teardown: async () => {
+              trace?.phase("feedback");
               try {
                 feedback = await collectAttemptFeedback({ api, companyId: fixtures!.company.id,
                   persist: async (evidence, signal) => {
@@ -3095,6 +3112,7 @@ for (const execution of executions) {
                 feedback.invocationCollection = "unavailable";
                 networkDiagnostics.push({ feedbackCaptureError: "feedback_evidence_write_failed" });
               } finally {
+                trace?.phase("cleanup", !["complete", "not_started"].includes(feedback.collection));
                 await fixtures!.teardown();
               }
             },
@@ -3163,6 +3181,9 @@ for (const execution of executions) {
         }
       }
 
+      const traceReceipt = await trace?.export({ failed: Boolean(primaryError), runIds: selectedRuns.map(run => run.id),
+        cleanup, complaints: feedback.complaints, suggestions: feedback.suggestions });
+      await saveTrace();
       const finishedAtMs = Date.now();
       const runtimeUsage = fixtureRuntimeCostCoverage(buildRuntimeUsage({
         environmentId: execution.environment.id,
@@ -3225,6 +3246,7 @@ for (const execution of executions) {
               },
         runtimeUsage,
         feedback,
+        ...(traceReceipt ? { tracing: traceReceipt } : {}),
         matcherResults,
         screenshots,
         cleanup,
