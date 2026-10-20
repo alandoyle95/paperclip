@@ -42,8 +42,9 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
   const activeProbe = lease.heartbeatRunId === null && lease.issueId === null && probe
     && typeof probe.runId === "string" && typeof probe.sessionId === "string"
     && typeof probe.expiresAtMs === "number" && probe.expiresAtMs > Date.now();
-  if ((operation.kind === "describe" || operation.kind === "prepare" || operation.kind === "submit" || operation.kind === "connection" || operation.kind === "read_state" || operation.kind === "archive_state" || operation.kind === "check_project_auth") &&
+  if ((operation.kind === "describe" || operation.kind === "prepare" || operation.kind === "submit" || operation.kind === "connection" || operation.kind === "read_state" || operation.kind === "archive_state" || operation.kind === "check_project_auth" || operation.kind === "copilot_metadata") &&
       (metadata.runnerTaskRetiring === true || !environment || (!activeProbe && run?.status !== "running") || lease.status !== "active" || (lease.expiresAt && lease.expiresAt.getTime() <= Date.now()))) throw new Error("Plugin-provided Runner execution lease is not active");
+  if (operation.kind === "copilot_metadata" && !activeProbe) throw new Error("Copilot metadata requires a private setup lease");
   const checkpointIdentity = operation.kind === "read_state" ? operation.identity
     : operation.kind === "archive_state" ? operation.priorIdentity : null;
   const runner = checkpointIdentity ? { runnerId: checkpointIdentity.runnerInstanceId, leaseId: checkpointIdentity.environmentLeaseId,
@@ -140,10 +141,10 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     operation.launch.maxRuntimeMs = Math.min(remainingMs, ...requestedLimits);
     delete operation.launch.maxLifetimeMs;
   }
-  if (operation.kind === "submit") {
+  if (operation.kind === "submit" || operation.kind === "copilot_metadata") {
     // No ticket, headers, environment values, or launch paths belong in metadata.
     const marked = await db.update(environmentLeases).set({
-      metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ runnerTaskLease: true, runnerTaskDispatched: true, runnerTaskExecutionStopped: false, runnerTaskSessionRetained: false, runnerTaskIdentity: operation.runner, runnerTaskResumeFrom: operation.resumeFrom ?? null })}::jsonb`,
+      metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ runnerTaskLease: true, runnerTaskDispatched: true, runnerTaskExecutionStopped: false, runnerTaskSessionRetained: false, ...(operation.kind === "submit" ? { runnerTaskIdentity: operation.runner, runnerTaskResumeFrom: operation.resumeFrom ?? null } : {}) })}::jsonb`,
     }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId),
       eq(environmentLeases.status, "active"), sql`coalesce(${environmentLeases.metadata}->>'runnerTaskRetiring', 'false') != 'true'`,
       requiredProjectAuthProof ? sql`${environmentLeases.metadata}->'runnerTaskProjectAuthValidation' = ${JSON.stringify(requiredProjectAuthProof)}::jsonb` : undefined,
@@ -164,7 +165,7 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
       taskId, runId: run?.id ?? (activeProbe ? String(probe.runId) : null), agentId: run?.agentId ?? null, projectIds,
       lease: { providerLeaseId: lease.providerLeaseId, metadata: lease.metadata ?? undefined },
       ...(workspaceBinding ? { workspace: workspaceBinding } : {}), operation,
-    }, 15_000);
+    }, operation.kind === "copilot_metadata" ? Math.max(1, Math.min(40_000, Number(probe?.expiresAtMs) - Date.now())) : 15_000);
     const parsed = parseEnvironmentTaskResult(operation, taskId, result);
     if (operation.kind === "check_project_auth" && parsed.kind === "project_auth") {
       if (parsed.configurationId !== operation.configurationId || parsed.provider !== operation.provider) throw new Error("Plugin Runner project validation identity mismatch");
@@ -176,9 +177,9 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
         if (saved.length !== 1) throw new Error("Plugin Runner project validation lease expired");
       }
     }
-    if (parsed.kind === "status" && parsed.executionStopped === true) {
+    if ((parsed.kind === "status" || parsed.kind === "copilot_metadata") && parsed.executionStopped === true) {
       await db.update(environmentLeases).set({
-        metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ runnerTaskExecutionStopped: true, runnerTaskSessionRetained: parsed.sessionStateAvailable === true })}::jsonb`,
+        metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ runnerTaskExecutionStopped: true, runnerTaskSessionRetained: parsed.kind === "status" && parsed.sessionStateAvailable === true })}::jsonb`,
       }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId)));
     }
     if (operation.kind === "complete") {

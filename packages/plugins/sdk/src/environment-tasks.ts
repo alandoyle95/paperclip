@@ -48,6 +48,7 @@ const preparedLaunch = z.object({ configurationId: providerId.max(1024),
 /** One plugin-provided Runner execution attempt with a PRP connection. Secrets are transient RPC input. */
 export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("describe") }).strict(),
+  z.object({ kind: z.literal("copilot_metadata"), token: credentialValue, model: z.string().min(1).max(1024).optional() }).strict(),
   z.object({ kind: z.literal("prepare"), requirements: environmentRunnerLaunchRequirementsSchema,
     recovery: preparedLaunch.optional(), resumeFrom: providerId.optional(),
     projectIds: z.array(z.string().uuid()).max(64).refine(ids => new Set(ids).size === ids.length, "Duplicate project IDs"),
@@ -96,6 +97,8 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
 
 export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("accepted"), taskId: providerId }).strict(),
+  z.object({ kind: z.literal("copilot_metadata"), taskId: providerId, metadata: z.record(z.string(), z.unknown()),
+    executionStopped: z.literal(true) }).strict(),
   z.object({ kind: z.literal("project_auth"), taskId: providerId, configurationId: providerId.max(1024),
     provider: identifier, allowed: z.boolean() }).strict(),
   z.object({ kind: z.literal("state"), taskId: providerId, state: z.record(z.string(), z.unknown()) }).strict(),
@@ -153,7 +156,7 @@ export interface PluginEnvironmentTaskParams extends Omit<PluginEnvironmentDrive
 /** An accepted stop is not proof of process termination. */
 export function parseEnvironmentTaskResult(operation: PluginEnvironmentTaskOperation, taskId: string, value: unknown): PluginEnvironmentTaskResult {
   const result = environmentTaskResultSchema.parse(value);
-  const expected = operation.kind === "describe" ? "description" : operation.kind === "prepare" ? "prepared" : operation.kind === "check_project_auth" ? "project_auth" : ["read_state", "archive_state"].includes(operation.kind) ? "state" : ["status", "connection", "credentials"].includes(operation.kind) ? operation.kind : "accepted";
+  const expected = operation.kind === "describe" ? "description" : operation.kind === "prepare" ? "prepared" : operation.kind === "check_project_auth" ? "project_auth" : ["read_state", "archive_state"].includes(operation.kind) ? "state" : ["status", "connection", "credentials", "copilot_metadata"].includes(operation.kind) ? operation.kind : "accepted";
   if (result.taskId !== taskId || result.kind !== expected) throw new Error("Invalid plugin-provided Runner execution response");
   return result;
 }

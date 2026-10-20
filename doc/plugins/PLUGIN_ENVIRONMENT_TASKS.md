@@ -34,6 +34,7 @@ See [the schemas](../../packages/plugins/sdk/src/environment-tasks.ts) for all f
 | `describe` | `description` | Return the installed Runner version and SHA-256 digest. |
 | `prepare` | `prepared` | Prepare the provider configuration for the exact Core requirements. Do not start a process. |
 | `submit` | `accepted` | Start the same opaque task at most once. Use the structured launch inputs. |
+| `copilot_metadata` | `copilot_metadata` | Verify a Copilot account and model on a private setup lease. Send no prompt. |
 | `connection` | `connection` | Return an authenticated WSS endpoint and its generation. |
 | `status` | `status` | Report the phase and observed process termination. |
 | `check_project_auth` | `project_auth` | Validate the prepared project configuration before managed credential transfer. |
@@ -170,3 +171,13 @@ The probe has no project mounts or task tools. It prepares the launch, checks
 authentication routing, and verifies the Runner and provider hello exchange.
 A passing result requires confirmed cleanup. This test does not enable
 heartbeat dispatch to plugin environments.
+
+## Copilot account test
+
+`copilot_metadata` accepts the selected token and an optional model ID. Core
+permits it only on an active private setup lease. The provider must use the
+verified Copilot metadata client. It must send no prompt and use no project
+workspace or tool server. Return the metadata and `executionStopped: true` only
+after the probe and its descendants stop. A lost reply keeps the task available
+for `stop`, `status`, and `complete`. Core checks the profile and model before
+it accepts the account. Do not store the token in task metadata or logs.

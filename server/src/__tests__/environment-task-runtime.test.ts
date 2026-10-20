@@ -163,8 +163,18 @@ describe("plugin-provided Runner execution", () => {
     for (const invalid of [{ ...operation, projectIds: [projectId] }, { ...operation, runner: { ...operation.runner, sessionId: "other" } }, submit]) {
       await expect(executeEnvironmentTask(database(value).db, workers as never, { companyId: "company", leaseId, operation: invalid })).rejects.toThrow("identity mismatch");
     }
+    const metadataOperation = { kind: "copilot_metadata" as const, token: "never-persist-token", model: "selected" };
+    const receipt = { kind: "copilot_metadata", taskId: "attempt-1", metadata: {}, executionStopped: true };
+    const metadataDatabase = database(value);
+    await expect(executeEnvironmentTask(metadataDatabase.db, worker(receipt) as never, { companyId: "company", leaseId, operation: metadataOperation })).resolves.toEqual(receipt);
+    const savedParams = JSON.stringify(metadataDatabase.sets.flatMap(set => new PgDialect().sqlToQuery((set as any).metadata).params));
+    expect(savedParams).toContain("runnerTaskDispatched");
+    expect(savedParams).not.toContain("never-persist-token");
+    await expect(executeEnvironmentTask(database().db, worker(receipt) as never, { companyId: "company", leaseId, operation: metadataOperation })).rejects.toThrow("private setup lease");
+    expect(() => parseEnvironmentTaskResult(metadataOperation, "attempt-1", { ...receipt, executionStopped: false })).toThrow();
     Object.assign(value.lease.metadata, { runnerTaskProbe: { runId: "probe-run", sessionId: "probe-session", expiresAtMs: Date.now() - 1 } });
     await expect(executeEnvironmentTask(database(value).db, workers as never, { companyId: "company", leaseId, operation })).rejects.toThrow("not active");
+    await expect(executeEnvironmentTask(database(value).db, workers as never, { companyId: "company", leaseId, operation: metadataOperation })).rejects.toThrow("not active");
     await expect(executeEnvironmentTask(database(value).db, workers as never, { companyId: "company", leaseId, operation: { kind: "stop" } })).resolves.toMatchObject({ kind: "accepted" });
   });
   it("dispatches with host-derived scope and a persisted attempt identity", async () => {

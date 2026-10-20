@@ -1,3 +1,4 @@
+import { environmentTaskResultSchema } from "@paperclipai/plugin-sdk";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { probeCopilotMetadata, validateCopilotMetadata } from "../vendor/paperclip-runner/live/index.js";
@@ -38,7 +39,12 @@ export async function probeCopilotConnection(db: Db, companyId: string, token: s
   try {
     if (environment.driver !== "ssh") {
       lease = await runtime.acquireRunLease(buildLoginLeaseAcquireArgs({ metadata: { companyId, environment, adapterType: "paperclip_runner" }, assertCompanyBinding: true, requestedExpiresAt: new Date(Date.now() + 90_000) }));
-      await runtime.realizeWorkspace({ environment, lease: lease.lease, workspace: {} });
+      if (environment.driver === "plugin" && await runtime.supportsTasks({ lease: lease.lease })) {
+        const updated = await environments.updateLeaseMetadata(lease.lease.id, { ...lease.lease.metadata,
+          runnerTaskProbe: { runId: randomUUID(), sessionId: randomUUID(), expiresAtMs: Date.now() + 90_000 } });
+        if (!updated) throw new Error("Copilot metadata probe lease disappeared");
+        lease.lease = updated;
+      } else await runtime.realizeWorkspace({ environment, lease: lease.lease, workspace: {} });
     }
     const target = await resolveEnvironmentExecutionTarget({ db, companyId, adapterType: "paperclip_runner", environment,
       leaseId: lease?.lease.id, lease: lease?.lease, leaseMetadata: lease?.lease.metadata ?? null, environmentRuntime: runtime });
@@ -72,6 +78,13 @@ function requireVerified(value: unknown) {
 
 export async function probeCopilotExecutionTarget(token: string, target: AdapterExecutionTarget | null | undefined, model?: string) {
   if (!target || target.kind === "local") return requireVerified(await probeCopilotMetadata(token, model));
+  if (target.transport === "sandbox" && target.runnerTask) {
+    const result = environmentTaskResultSchema.parse(await target.runnerTask({ kind: "copilot_metadata", token, ...(model ? { model } : {}) }));
+    if (result.kind !== "copilot_metadata") throw unprocessable("Copilot metadata verification failed.", { code: "COPILOT_REQUEST_FAILED" });
+    const verified = requireVerified(result.metadata);
+    if (model && !verified.models.some(value => value.id === model)) throw unprocessable("The selected Copilot model is unavailable for this account.", { code: "COPILOT_MODEL_UNAVAILABLE" });
+    return verified;
+  }
   // Try the same two installed locations as native admission. An old /opt
   // pack must not hide a valid home pack; account/model failures remain final.
   const deadlineAt = Date.now() + 35_000;
