@@ -333,7 +333,6 @@ export interface RunnerE2EResult {
   usage?: Record<string, unknown> | null;
   runtimeUsage?: RunnerE2ERuntimeUsage;
   billing?: RunnerE2EBillingSummary;
-  /** Counts and review fingerprints only; full bodies stay in private evidence. */
   feedback?: import("./feedback.js").FeedbackSummary;
   matcherResults?: Array<{
     matcher: Matcher;

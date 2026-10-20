@@ -9,7 +9,6 @@ export interface FeedbackSummary {
   version: 1;
   collection: FeedbackCollectionStatus;
   invocationCollection: FeedbackCollectionStatus;
-  /** A successful list is evidence of no saved feedback, not of tool availability. */
   toolAvailability: "observed" | "unknown";
   complaints: number;
   suggestions: number;
@@ -41,14 +40,12 @@ export function emptyFeedbackSummary(): FeedbackSummary {
 
 function feedbackKind(name: unknown): FeedbackInvocation["kind"] | undefined {
   if (typeof name !== "string") return undefined;
-  // OpenCode and ACP expose MCP names differently from the bare PRP tools.
   const canonicalName = name.replace(/^(?:mcp__paperclip__|paperclip__|paperclip_)/, "");
   if (/(?:^|[.\/])submit_complaint$/.test(canonicalName)) return "complaint";
   if (/(?:^|[.\/])submit_suggestion$/.test(canonicalName)) return "suggestion";
   return undefined;
 }
 
-/** Read tool receipts, never model prose claiming that a submission happened. */
 export function observeFeedbackInvocations(runId: string, events: readonly Row[]): FeedbackInvocation[] {
   const calls = new Map<string, FeedbackInvocation>();
   for (const event of events) {
@@ -65,7 +62,6 @@ export function observeFeedbackInvocations(runId: string, events: readonly Row[]
     const call = calls.get(callId);
     if (!completed || !call || kind && kind !== call.kind) continue;
     const status = execution ? payload.status : item.status;
-    // Completion is transport evidence only. Saved commentary is read separately.
     if (payload.isError === true || item.isError === true || ["failed", "error", "cancelled"].includes(String(status))) call.outcome = "failed";
     else if (status === "completed") call.outcome = "completed";
   }
@@ -102,7 +98,6 @@ export function summarizeCampaignFeedback(attempts: readonly { feedback?: Feedba
   return { complaints, suggestions, incomplete, failedSubmissions, unknownSubmissions, review: [...review.values()] };
 }
 
-/** Company-wide capture includes child/background runs. Caller persists each checkpoint before teardown. */
 export async function collectAttemptFeedback(input: {
   api: Pick<RunnerApi, "get">;
   companyId: string;
@@ -125,8 +120,6 @@ export async function collectAttemptFeedback(input: {
     summary.toolAvailability = evidence.invocations.length ? "observed" : "unknown";
     await input.persist(evidence);
   };
-  // This write is deliberately outside read-error handling: storage failure must
-  // be visible to the caller rather than masquerading as successful collection.
   await persist();
   const seen = new Set<string>();
   let expectedTotal: number | undefined;
@@ -180,8 +173,6 @@ export async function collectAttemptFeedback(input: {
   summary.invocationCollection = runs.length < 1000 ? "complete" : "partial";
   if (runs.length >= 1000) evidence.diagnostics.push("run_limit_reached");
   for (const listed of runs) {
-    // The public list projection omits runtimeMode. Fetch the bounded detail
-    // instead of treating every native run as an unobserved legacy helper.
     let run: { id: string; status?: string; runtimeMode?: string } = listed;
     try {
       const detail = await get<typeof run>(`/api/heartbeat-runs/${encodeURIComponent(listed.id)}`);
@@ -196,7 +187,6 @@ export async function collectAttemptFeedback(input: {
       summary.collection = summary.collection === "complete" ? "partial" : summary.collection;
       summary.invocationCollection = "partial";
     }
-    // Legacy shell helpers are not fully represented by native tool receipts.
     if (run.runtimeMode !== "native") summary.invocationCollection = "partial";
     const events: Row[] = [];
     let afterSeq = 0;

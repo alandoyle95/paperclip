@@ -3078,8 +3078,6 @@ for (const execution of executions) {
             },
             assertions: beforeEnvironmentTeardownAssertions,
             teardown: async () => {
-              // Cancellation and cleanup assertions may fail. Still capture
-              // company-wide feedback before the rows cascade with teardown.
               try {
                 feedback = await collectAttemptFeedback({ api, companyId: fixtures!.company.id,
                   persist: async evidence => {
