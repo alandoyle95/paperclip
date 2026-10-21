@@ -176,6 +176,10 @@ function Setup({
       ? { provider: "openrouter", method: "api_key", mode: "responsible_user" }
       : undefined,
   );
+  // OpenCode can run unmanaged: the server's own OpenCode config (custom or
+  // self-hosted providers) supplies auth instead of a managed connection.
+  const canUseLocalOpenCodeConfig = adapterType === "opencode_local";
+  const [useLocalOpenCodeConfig, setUseLocalOpenCodeConfig] = useState(false);
   const [connection, setConnection] = useState<ProviderConnection | null>(null);
   const aiBinding = runtimeAiBinding ?? connection?.aiConnection;
   const connectionModels = useConnectionModels(companyId, aiBinding, brandType);
@@ -945,7 +949,15 @@ function Setup({
                           <ToggleField label="Allow externally billed provider" hint="Dot does not report token usage or cost. Paperclip cannot enforce a provider spend ceiling; known company and agent budget limits still apply."
                             checked={allowUnmeteredProvider} onChange={value => { setAllowUnmeteredProvider(value); resetTest(); }} />
                         </>}
-                        {!connectionAdapter && aiProviderForAdapter(brandType) && (
+                        {canUseLocalOpenCodeConfig && (
+                          <ToggleField label="Use this server's OpenCode config" hint="Run OpenCode with the providers and models already configured for the Paperclip server user (for example a local or self-hosted model server) instead of a managed connection."
+                            checked={useLocalOpenCodeConfig} onChange={value => {
+                              setUseLocalOpenCodeConfig(value);
+                              setRuntimeAiBinding(value ? undefined : { provider: "openrouter", method: "api_key", mode: "responsible_user" });
+                              resetTest();
+                            }} />
+                        )}
+                        {!connectionAdapter && !useLocalOpenCodeConfig && aiProviderForAdapter(brandType) && (
                           <AiConnectionField companyId={companyId} agentName={name} adapterType={brandType} model={model} environmentId={environmentId ?? undefined} value={aiBinding}
                             onChange={binding => { binding.mode !== "router" && setRuntimeAiBinding(binding); resetTest();
                               if (brandType === "copilot_runtime" && hashKey([aiBinding ?? null]) === hashKey([binding ?? null])) void refreshCopilotModels();
@@ -1021,7 +1033,7 @@ function Setup({
                             {SETUP_LOGIN_HINTS[adapterType]}
                           </p>
                         )}
-                        {hasCredentialField && !aiBinding && (
+                        {hasCredentialField && !aiBinding && !useLocalOpenCodeConfig && (
                           <div className="grid gap-5 sm:grid-cols-2">
                             {chooseProvider && (
                               <Field label="API key provider">
